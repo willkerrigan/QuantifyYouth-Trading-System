@@ -216,3 +216,30 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Python cache files
+__pycache__/
+*.pyc
+
+# Virtual environments
+.venv/
+venv/
+
+# Jupyter notebook checkpoints
+.ipynb_checkpoints/
+
+# Private keys / environment variables
+.env
+
+# Local data files
+data/*
+!data/.gitkeep
+*.csv
+*.xlsx
+*.parquet
+
+# Mac system files
+.DS_Store
+
+# VS Code local settings
+.vscode/
