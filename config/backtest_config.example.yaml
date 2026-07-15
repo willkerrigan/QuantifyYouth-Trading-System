@@ -1,0 +1,36 @@
+backtest:
+  start_date: "2023-01-01"
+  end_date: "2026-07-14"
+  initial_capital: 100000
+  commission: 0.001
+  slippage: 0.0002
+
+data:
+  source: "alpaca"
+  symbols: ["SPY", "QQQ", "IWM"]
+  timeframe: "1d"
+
+strategy:
+  name: "ma_crossover"
+  parameters:
+    ma_short: [10, 20, 30]
+    ma_long: [50, 100, 200]
+    exit_threshold: [0.02, 0.03, 0.05]
+    stop_loss: [0.02, 0.03]
+
+optimization:
+  metric: "sharpe_ratio"
+  score_direction: "maximize"
+  parallel_workers: 4
+  export_top_n: 10
+
+risk:
+  max_position_size: 0.1
+  max_leverage: 1.0
+  track_drawdown: true
+
+export:
+  output_dir: "output/"
+  trade_log_csv: true
+  equity_curve_csv: true
+  format_precision: 2
