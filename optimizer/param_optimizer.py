@@ -15,12 +15,14 @@ logger = logging.getLogger(__name__)
 
 
 class ParameterOptimizer:
-    def __init__(self, config: Dict, strategy_func, metric: str = "sharpe_ratio", direction: str = "maximize", workers: int = 4):
+    def __init__(self, config: Dict, strategy_func, metric: str = "sharpe_ratio", direction: str = "maximize",
+                 workers: int = 4, prepare_data_func: Optional[callable] = None):
         self.config = config
         self.strategy_func = strategy_func
         self.metric = metric
         self.direction = direction
         self.workers = workers
+        self.prepare_data_func = prepare_data_func
         self.results = []
 
     def optimize(self, symbols: List[str]) -> Tuple[Dict, List[Dict]]:
@@ -61,7 +63,7 @@ class ParameterOptimizer:
 
     def _run_backtest_wrapper(self, symbols: List[str], params: Dict, in_sample_end_date: str) -> Optional[Dict]:
         try:
-            engine = BacktestEngine(self.config, self.strategy_func)
+            engine = BacktestEngine(self.config, self.strategy_func, prepare_data_func=self.prepare_data_func)
             final_equity, trades, equity_curve = engine.run(symbols, params, end_date=in_sample_end_date)
             metrics = RiskMetrics.calculate_metrics_summary(trades, equity_curve, self.config["backtest"]["initial_capital"])
             return {"parameters": params, "final_equity": final_equity, "num_trades": len(trades),

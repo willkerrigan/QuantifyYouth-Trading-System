@@ -4,12 +4,10 @@ import logging
 from pathlib import Path
 import yaml
 from optimizer.param_optimizer import ParameterOptimizer
+from backtester.strategies import rsi2_strategy, prepare_rsi2_data
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
-
-def example_ma_crossover_strategy(daily_data: dict, open_positions: dict, params: dict):
-    return {symbol: "HOLD" for symbol in daily_data}
 
 def main():
     parser = argparse.ArgumentParser(description="Run parameter optimization")
@@ -26,7 +24,8 @@ def main():
     direction = config["optimization"].get("score_direction", "maximize")
     top_n = config["optimization"].get("export_top_n", 10)
 
-    optimizer = ParameterOptimizer(config, example_ma_crossover_strategy, metric=metric, direction=direction, workers=args.workers)
+    optimizer = ParameterOptimizer(config, rsi2_strategy, metric=metric, direction=direction,
+                                   workers=args.workers, prepare_data_func=prepare_rsi2_data)
     best_params, all_results = optimizer.optimize(symbols)
 
     logger.info("="*60)

@@ -22,6 +22,8 @@ class DataLoader:
         if self.source == "yahoo":
             import yfinance as yf
             df = yf.download(symbol, start=start_date, end=end_date, progress=False)
+            if isinstance(df.columns, pd.MultiIndex):
+                df.columns = df.columns.get_level_values(0)
         elif self.source == "alpaca":
             from alpaca.data.historical import StockHistoricalDataClient
             from alpaca.data.requests import StockBarsRequest

@@ -40,10 +40,12 @@ class Trade:
 
 
 class BacktestEngine:
-    def __init__(self, config: Dict, strategy_func, data_loader: Optional[DataLoader] = None):
+    def __init__(self, config: Dict, strategy_func, data_loader: Optional[DataLoader] = None,
+                 prepare_data_func: Optional[callable] = None):
         self.config = config
         self.strategy_func = strategy_func
         self.data_loader = data_loader or DataLoader(config)
+        self.prepare_data_func = prepare_data_func
         self.initial_capital = config["backtest"]["initial_capital"]
         self.commission = config["backtest"].get("commission", 0.001)
         self.slippage = config["backtest"].get("slippage", 0.0)
@@ -67,6 +69,8 @@ class BacktestEngine:
         for symbol in symbols:
             try:
                 df = self.data_loader.load(symbol)
+                if self.prepare_data_func is not None:
+                    df = self.prepare_data_func(df)
                 data[symbol] = df
             except Exception as e:
                 logger.warning(f"Failed to load data for {symbol}: {e}")

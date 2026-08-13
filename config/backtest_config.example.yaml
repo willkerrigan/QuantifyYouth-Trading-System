@@ -16,12 +16,10 @@ data:
   timeframe: "1d"
 
 strategy:
-  name: "ma_crossover"
+  name: "rsi2"
   parameters:
-    ma_short: [10, 20, 30]
-    ma_long: [50, 100, 200]
-    exit_threshold: [0.02, 0.03, 0.05]
-    stop_loss: [0.02, 0.03]
+    rsi_buy_threshold: [5]
+    rsi_sell_threshold: [70]
 
 optimization:
   metric: "sharpe_ratio"
