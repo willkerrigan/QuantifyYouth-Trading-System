@@ -15,7 +15,8 @@ class Trade:
     """Represents a single completed trade."""
 
     def __init__(self, asset: str, entry_date: datetime, entry_price: float,
-                 exit_date: datetime, exit_price: float, size: float, strategy_params: Dict):
+                 exit_date: datetime, exit_price: float, size: float, strategy_params: Dict,
+                 costs: float = 0.0):
         self.asset = asset
         self.entry_date = entry_date
         self.entry_price = entry_price
@@ -23,8 +24,14 @@ class Trade:
         self.exit_price = exit_price
         self.size = size
         self.strategy_params = strategy_params
-        self.realized_pnl = (exit_price - entry_price) * size
-        self.pnl_percent = ((exit_price - entry_price) / entry_price) * 100
+        self.costs = costs
+        self.gross_pnl = (exit_price - entry_price) * size
+        # Net of commission, because win_rate_pct and profit_factor are computed
+        # from this field: a trade whose gross gain is smaller than its fees is a
+        # loser, and scoring it as a winner overstates both metrics.
+        self.realized_pnl = self.gross_pnl - costs
+        notional = entry_price * size
+        self.pnl_percent = (self.realized_pnl / notional) * 100 if notional else 0.0
 
     def to_dict(self) -> Dict:
         return {
@@ -34,6 +41,8 @@ class Trade:
             "Entry_Price": f"{self.entry_price:.2f}",
             "Exit_Price": f"{self.exit_price:.2f}",
             "Size": f"{self.size:.0f}",
+            "Gross_PnL": f"{self.gross_pnl:.2f}",
+            "Costs": f"{self.costs:.2f}",
             "Realized_PnL": f"{self.realized_pnl:.2f}",
             "PnL_Percent": f"{self.pnl_percent:.2f}%",
         }
@@ -66,6 +75,7 @@ class BacktestEngine:
         self.open_positions = {}
 
         data = {}
+        failures = {}
         for symbol in symbols:
             try:
                 df = self.data_loader.load(symbol)
@@ -74,11 +84,16 @@ class BacktestEngine:
                 data[symbol] = df
             except Exception as e:
                 logger.warning(f"Failed to load data for {symbol}: {e}")
+                failures[symbol] = e
                 continue
 
         if not data:
-            logger.error("No data loaded")
-            return self.capital, [], pd.DataFrame()
+            # Returning an empty result here would report "0 trades, 0% return"
+            # as though it were a finding, which is how a broken data feed gets
+            # mistaken for a flat strategy. Fail loudly instead.
+            raise RuntimeError(
+                f"No data could be loaded for any requested symbol. Failures: "
+                + "; ".join(f"{sym}: {err}" for sym, err in failures.items()))
 
         dates = self._get_aligned_dates(data)
         tz = dates[0].tzinfo if dates else None
@@ -111,10 +126,29 @@ class BacktestEngine:
                 elif signal == "SELL" and symbol in self.open_positions:
                     self._exit_position(symbol, daily_data[symbol]["close"], date)
 
-            self.equity_curve.append({"date": date, "equity": self.capital})
+            self.equity_curve.append({"date": date, "equity": self._mark_to_market(daily_data)})
 
+        final_equity = self.equity_curve[-1]["equity"] if self.equity_curve else self.capital
         logger.info(f"Backtest complete. Generated {len(self.trades)} trades.")
-        return self.capital, self.trades, self._equity_curve_to_df()
+        return final_equity, self.trades, self._equity_curve_to_df()
+
+    def _mark_to_market(self, daily_data: Dict) -> float:
+        """Total account value: cash plus the market value of every open position.
+
+        Recording cash alone treats the money spent opening a position as a loss
+        until it is closed, which turns ordinary position-taking into phantom
+        drawdown and leaves an open position at the end of a run valued at zero.
+        """
+        equity = self.capital
+        for symbol, pos in self.open_positions.items():
+            bar = daily_data.get(symbol)
+            # Fall back to the entry price when this bar has no quote for the
+            # symbol, so a data gap holds the position flat rather than zeroing it.
+            price = bar["close"] if bar is not None and "close" in bar else pos["entry_price"]
+            if price is None or (isinstance(price, float) and np.isnan(price)):
+                price = pos["entry_price"]
+            equity += pos["size"] * price
+        return equity
 
     @staticmethod
     def _stop_loss_fraction(params: Dict) -> Optional[float]:
@@ -159,23 +193,34 @@ class BacktestEngine:
         return stopped_out
 
     def _enter_position(self, symbol: str, price: float, date: datetime, params: Dict) -> None:
-        position_size = int((self.capital * 0.1) / price)
-        entry_cost = position_size * price * (1 + self.commission)
+        # Buying lifts the fill above the quoted price; selling pushes it below.
+        fill_price = price * (1 + self.slippage)
+        position_size = int((self.capital * 0.1) / fill_price)
+        # A size of 0 costs nothing and would otherwise be recorded as a real
+        # position: it occupies open_positions, blocks every later entry in the
+        # symbol, and closes as a phantom 0-PnL trade that skews the win rate.
+        if position_size <= 0:
+            return
+        entry_cost = position_size * fill_price * (1 + self.commission)
         if entry_cost <= self.capital:
             stop_loss = self._stop_loss_fraction(params)
-            stop_price = price * (1 - stop_loss) if stop_loss is not None else None
-            self.open_positions[symbol] = {"entry_price": price, "entry_date": date, "size": position_size,
-                                           "params": params, "stop_price": stop_price}
+            stop_price = fill_price * (1 - stop_loss) if stop_loss is not None else None
+            self.open_positions[symbol] = {"entry_price": fill_price, "entry_date": date, "size": position_size,
+                                           "params": params, "stop_price": stop_price,
+                                           "entry_commission": position_size * fill_price * self.commission}
             self.capital -= entry_cost
 
     def _exit_position(self, symbol: str, price: float, date: datetime) -> None:
         if symbol not in self.open_positions:
             return
         pos = self.open_positions.pop(symbol)
-        exit_proceeds = pos["size"] * price * (1 - self.commission)
+        fill_price = price * (1 - self.slippage)
+        exit_commission = pos["size"] * fill_price * self.commission
+        exit_proceeds = pos["size"] * fill_price - exit_commission
         self.capital += exit_proceeds
         trade = Trade(asset=symbol, entry_date=pos["entry_date"], entry_price=pos["entry_price"],
-                      exit_date=date, exit_price=price, size=pos["size"], strategy_params=pos["params"])
+                      exit_date=date, exit_price=fill_price, size=pos["size"], strategy_params=pos["params"],
+                      costs=pos.get("entry_commission", 0.0) + exit_commission)
         self.trades.append(trade)
 
     def _get_aligned_dates(self, data: Dict) -> List[datetime]:

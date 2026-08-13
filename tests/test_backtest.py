@@ -104,7 +104,11 @@ def test_stop_loss_exit_price_is_the_stop_price_not_the_close():
     # entry 100 * (1 - 0.02) == 98.0, even though the bar closed at 100.
     assert trades[0].entry_price == 100.0
     assert trades[0].exit_price == pytest.approx(98.0)
-    assert trades[0].realized_pnl == pytest.approx(-2.0 * trades[0].size)
+    # Gross is the raw price move; realized is net of the commission actually paid
+    # on both legs, since win rate and profit factor are scored off realized_pnl.
+    assert trades[0].gross_pnl == pytest.approx(-2.0 * trades[0].size)
+    assert trades[0].costs == pytest.approx(100 * 100 * 0.001 + 100 * 98 * 0.001)
+    assert trades[0].realized_pnl == pytest.approx(trades[0].gross_pnl - trades[0].costs)
 
 
 def test_stop_loss_does_not_trigger_when_low_stays_above_level():
@@ -145,6 +149,71 @@ def test_stopped_out_position_ignores_the_strategys_signal_that_bar():
     assert len(trades) == 1
     assert trades[0].exit_date == pd.Timestamp("2024-01-02")
     assert engine.open_positions["SPY"]["entry_date"] == pd.Timestamp("2024-01-03")
+
+
+_RISING_ROWS = [
+    {"open": 100.0, "high": 101.0, "low": 99.0, "close": 100.0, "volume": 1000},
+    {"open": 150.0, "high": 151.0, "low": 149.0, "close": 150.0, "volume": 1000},
+    {"open": 200.0, "high": 201.0, "low": 199.0, "close": 200.0, "volume": 1000},
+]
+
+_FRICTIONLESS = {"backtest": {"initial_capital": 100000, "commission": 0.0, "slippage": 0.0}}
+
+
+def test_equity_curve_marks_open_positions_to_market():
+    """Buying must not look like a loss: cash leaves, position value replaces it."""
+    engine = BacktestEngine(_FRICTIONLESS, _buy_first_bar_then_hold,
+                            data_loader=_StubOHLCDataLoader(_RISING_ROWS))
+    _, _, curve = engine.run(["SPY"], {})
+
+    # Bar 0 opens the position at 100; equity must stay at the starting capital
+    # rather than dropping by the cash spent.
+    assert curve["equity"].iloc[0] == pytest.approx(100000.0)
+    # Price doubles by bar 2 and the position is still open, so equity must rise.
+    assert curve["equity"].iloc[-1] > curve["equity"].iloc[0]
+
+
+def test_open_position_is_not_valued_at_zero_at_end_of_run():
+    """A run that ends holding a winner must report a gain, not a phantom loss."""
+    engine = BacktestEngine(_FRICTIONLESS, _buy_first_bar_then_hold,
+                            data_loader=_StubOHLCDataLoader(_RISING_ROWS))
+    final_equity, trades, _ = engine.run(["SPY"], {})
+
+    assert trades == []                      # never closed
+    assert "SPY" in engine.open_positions    # still held
+    size = engine.open_positions["SPY"]["size"]
+    # 100 -> 200 on `size` shares, with the rest of the capital still in cash.
+    assert final_equity == pytest.approx(100000.0 + size * 100.0)
+
+
+def test_slippage_is_applied_to_fills():
+    config = {"backtest": {"initial_capital": 100000, "commission": 0.0, "slippage": 0.01}}
+    engine = BacktestEngine(config, _buy_first_bar_then_hold,
+                            data_loader=_StubOHLCDataLoader(_RISING_ROWS))
+    engine.run(["SPY"], {})
+    # Buying fills above the quoted close of 100, never at it.
+    assert engine.open_positions["SPY"]["entry_price"] == pytest.approx(101.0)
+
+
+def test_zero_share_position_is_not_opened():
+    """A price above 10% of capital sizes to 0 shares; that must not book a position."""
+    rows = [{"open": 1e6, "high": 1.1e6, "low": 0.9e6, "close": 1e6, "volume": 1}] * 2
+    engine = BacktestEngine(_FRICTIONLESS, _buy_first_bar_then_hold,
+                            data_loader=_StubOHLCDataLoader(rows))
+    _, trades, _ = engine.run(["SPY"], {})
+
+    assert engine.open_positions == {}
+    assert trades == []
+
+
+def test_total_data_load_failure_raises_instead_of_reporting_zero_trades():
+    class _FailingLoader:
+        def load(self, symbol, force_refresh=False):
+            raise ValueError("no data for you")
+
+    engine = BacktestEngine(_FRICTIONLESS, _hold_strategy, data_loader=_FailingLoader())
+    with pytest.raises(RuntimeError, match="No data could be loaded"):
+        engine.run(["SPY"], {})
 
 
 def test_periods_per_year_for_daily_timeframe():
