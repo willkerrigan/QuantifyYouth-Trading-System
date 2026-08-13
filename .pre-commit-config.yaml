@@ -1,0 +1,32 @@
+# Pre-commit hooks for QuantifyYouth Trading System.
+#
+# PRIMARY PURPOSE: stop broker API keys (Alpaca, exchange credentials) from
+# ever landing in this public repository. Formatting hooks are deliberately
+# limited to whitespace/EOF hygiene -- no black/isort/auto-reformatting, which
+# would rewrite the whole codebase and create large merge conflicts.
+#
+# Enable with:  pip install pre-commit && pre-commit install
+# Scan history: pre-commit run gitleaks --all-files
+
+repos:
+  # --- Secret scanning (the reason this file exists) ---
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.18.4
+    hooks:
+      - id: gitleaks
+
+  # --- Basic hygiene ---
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.6.0
+    hooks:
+      # Second line of defence for credentials.
+      - id: detect-private-key
+      - id: check-added-large-files
+        args: ["--maxkb=2048"]
+      # Whitespace / EOF hygiene (no code restructuring).
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      # Config validity.
+      - id: check-yaml
+      - id: check-toml
+      - id: check-merge-conflict

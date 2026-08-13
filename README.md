@@ -106,6 +106,40 @@ python scripts/run_out_of_sample.py --config config/backtest_config.yaml \
 
 ## Development
 
+### Install dev dependencies
+
+Install the pinned runtime dependencies, then install the project itself in
+editable mode. The editable install is what makes `backtester`, `optimizer`,
+and `execution` importable from anywhere — no more `PYTHONPATH=.` prefixes on
+test or script invocations.
+
 ```bash
-pytest tests/ -v --cov
+python -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt   # pinned runtime dependencies
+pip install -e ".[dev]"           # editable install + pytest / pre-commit
+```
+
+### Run tests
+
+```bash
+pytest tests/ -v
+pytest tests/ -v --cov       # with coverage
+```
+
+The test suite is hermetic: it needs no network access and no broker API keys.
+Keep it that way — stub out data sources rather than calling live endpoints.
+CI (`.github/workflows/ci.yml`) runs the same command on every push and pull
+request.
+
+### Enable pre-commit hooks
+
+The hooks exist mainly to keep Alpaca/exchange credentials out of this public
+repo (`gitleaks` secret scanning plus `detect-private-key`), along with basic
+whitespace and YAML/TOML validity checks.
+
+```bash
+pip install pre-commit
+pre-commit install              # run automatically on every `git commit`
+pre-commit run --all-files      # optional: scan the whole tree once
 ```
