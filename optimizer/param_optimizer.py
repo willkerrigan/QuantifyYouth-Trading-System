@@ -16,20 +16,29 @@ logger = logging.getLogger(__name__)
 
 class ParameterOptimizer:
     def __init__(self, config: Dict, strategy_func, metric: str = "sharpe_ratio", direction: str = "maximize",
-                 workers: int = 4, prepare_data_func: Optional[callable] = None):
+                 workers: int = 4, prepare_data_func: Optional[callable] = None,
+                 in_sample_start_date: Optional[str] = None, in_sample_end_date: Optional[str] = None):
+        """in_sample_start_date/in_sample_end_date override config.backtest.in_sample_end_date
+        for callers that optimize over a specific sub-window (e.g. one walk-forward
+        training fold). When omitted, behaviour is unchanged: the in-sample window runs
+        from the start of the loaded data through config.backtest.in_sample_end_date,
+        which remains required."""
         self.config = config
         self.strategy_func = strategy_func
         self.metric = metric
         self.direction = direction
         self.workers = workers
         self.prepare_data_func = prepare_data_func
+        self.in_sample_start_date = in_sample_start_date
+        self.in_sample_end_date = in_sample_end_date
         self.results = []
 
     def optimize(self, symbols: List[str]) -> Tuple[Dict, List[Dict]]:
         param_ranges = self.config["strategy"].get("parameters", {})
         total_combos = GridSearchGenerator.count_combinations(param_ranges)
 
-        in_sample_end_date = self.config["backtest"].get("in_sample_end_date")
+        in_sample_start_date = self.in_sample_start_date
+        in_sample_end_date = self.in_sample_end_date or self.config["backtest"].get("in_sample_end_date")
         if not in_sample_end_date:
             raise ValueError(
                 "config.backtest.in_sample_end_date is required: the optimizer must not be "
@@ -37,13 +46,14 @@ class ParameterOptimizer:
                 "be tuned on the out-of-sample period and look better than they really are."
             )
         logger.info(f"Starting parameter optimization: {total_combos} combinations "
-                   f"(in-sample data through {in_sample_end_date})")
+                   f"(in-sample data {in_sample_start_date or 'from start'} through {in_sample_end_date})")
 
         combinations = list(GridSearchGenerator.generate_combinations(param_ranges))
         self.results = []
 
         with ProcessPoolExecutor(max_workers=self.workers) as executor:
-            futures = {executor.submit(self._run_backtest_wrapper, symbols, params, in_sample_end_date): (i, params)
+            futures = {executor.submit(self._run_backtest_wrapper, symbols, params, in_sample_end_date,
+                                       in_sample_start_date): (i, params)
                       for i, params in enumerate(combinations)}
             for future in as_completed(futures):
                 idx, params = futures[future]
@@ -61,10 +71,12 @@ class ParameterOptimizer:
         logger.info(f"Optimization complete. Best {self.metric}: {best_result[self.metric]:.4f}")
         return best_result["parameters"], self.results
 
-    def _run_backtest_wrapper(self, symbols: List[str], params: Dict, in_sample_end_date: str) -> Optional[Dict]:
+    def _run_backtest_wrapper(self, symbols: List[str], params: Dict, in_sample_end_date: str,
+                              in_sample_start_date: Optional[str] = None) -> Optional[Dict]:
         try:
             engine = BacktestEngine(self.config, self.strategy_func, prepare_data_func=self.prepare_data_func)
-            final_equity, trades, equity_curve = engine.run(symbols, params, end_date=in_sample_end_date)
+            final_equity, trades, equity_curve = engine.run(symbols, params, start_date=in_sample_start_date,
+                                                            end_date=in_sample_end_date)
             periods_per_year = periods_per_year_for_timeframe(self.config["data"].get("timeframe", "1d"))
             metrics = RiskMetrics.calculate_metrics_summary(trades, equity_curve, self.config["backtest"]["initial_capital"],
                                                              periods_per_year=periods_per_year)
