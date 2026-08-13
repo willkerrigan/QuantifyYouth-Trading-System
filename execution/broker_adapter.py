@@ -1,4 +1,5 @@
 import logging
+import math
 from typing import Dict, Optional
 
 logger = logging.getLogger(__name__)
@@ -45,6 +46,23 @@ class BrokerAdapter:
             return {}
 
     def submit_order(self, symbol: str, qty: float, side: str, order_type: str = "market", time_in_force: str = "day") -> Optional[Dict]:
+        # Validate before touching the broker: a bad qty or side must never
+        # reach the API, where it could be rejected loudly or filled wrongly.
+        if not symbol or not isinstance(symbol, str):
+            logger.error(f"Order rejected: invalid symbol {symbol!r}")
+            return None
+        try:
+            qty = float(qty)
+        except (TypeError, ValueError):
+            logger.error(f"Order rejected for {symbol}: non-numeric qty {qty!r}")
+            return None
+        if not math.isfinite(qty) or qty <= 0:
+            logger.error(f"Order rejected for {symbol}: qty must be > 0 (got {qty!r})")
+            return None
+        if not isinstance(side, str) or side.lower() not in ("buy", "sell"):
+            logger.error(f"Order rejected for {symbol}: invalid side {side!r}")
+            return None
+
         try:
             from alpaca.trading.requests import MarketOrderRequest
             from alpaca.trading.enums import OrderSide, TimeInForce
