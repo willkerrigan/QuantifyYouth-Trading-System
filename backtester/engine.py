@@ -93,9 +93,19 @@ class BacktestEngine:
             dates = [d for d in dates if d < end_ts]
         for date in dates:
             daily_data = {sym: df.loc[date] for sym, df in data.items() if date in df.index}
+
+            # Stops are checked against the bar's low before the strategy is consulted,
+            # so a position that gapped/traded through its stop is already flat when the
+            # strategy sees open_positions.
+            stopped_out = self._apply_stop_losses(daily_data, date)
+
             signals = self.strategy_func(daily_data, self.open_positions, params)
 
             for symbol, signal in signals.items():
+                # A position stopped out on this bar is done for the bar: no re-entry
+                # and no second exit from the strategy's own signal.
+                if symbol in stopped_out:
+                    continue
                 if signal == "BUY" and symbol not in self.open_positions:
                     self._enter_position(symbol, daily_data[symbol]["close"], date, params)
                 elif signal == "SELL" and symbol in self.open_positions:
@@ -106,11 +116,56 @@ class BacktestEngine:
         logger.info(f"Backtest complete. Generated {len(self.trades)} trades.")
         return self.capital, self.trades, self._equity_curve_to_df()
 
+    @staticmethod
+    def _stop_loss_fraction(params: Dict) -> Optional[float]:
+        """Return the stop-loss fraction from params, or None when no stop is configured.
+
+        A missing key, None, 0 or any non-usable value means "no stop" so that the
+        engine behaves exactly as it did before stops existed.
+        """
+        if not params:
+            return None
+        raw = params.get("stop_loss")
+        if raw is None:
+            return None
+        try:
+            stop_loss = float(raw)
+        except (TypeError, ValueError):
+            logger.warning(f"Ignoring non-numeric stop_loss: {raw!r}")
+            return None
+        if not np.isfinite(stop_loss) or stop_loss <= 0:
+            return None
+        if stop_loss >= 1:
+            logger.warning(f"Ignoring stop_loss {stop_loss}: must be a fraction below 1 (e.g. 0.02 for 2%).")
+            return None
+        return stop_loss
+
+    def _apply_stop_losses(self, daily_data: Dict, date: datetime) -> set:
+        """Exit any open position whose bar low reached its stop. Returns the symbols stopped out."""
+        stopped_out = set()
+        for symbol in list(self.open_positions.keys()):
+            pos = self.open_positions[symbol]
+            stop_price = pos.get("stop_price")
+            if stop_price is None or symbol not in daily_data:
+                continue
+            bar = daily_data[symbol]
+            low = bar["low"] if "low" in bar else bar["close"]
+            if low is None or (isinstance(low, float) and np.isnan(low)):
+                continue
+            if low <= stop_price:
+                # Fill at the stop, not the close: the stop triggers intrabar.
+                self._exit_position(symbol, stop_price, date)
+                stopped_out.add(symbol)
+        return stopped_out
+
     def _enter_position(self, symbol: str, price: float, date: datetime, params: Dict) -> None:
         position_size = int((self.capital * 0.1) / price)
         entry_cost = position_size * price * (1 + self.commission)
         if entry_cost <= self.capital:
-            self.open_positions[symbol] = {"entry_price": price, "entry_date": date, "size": position_size, "params": params}
+            stop_loss = self._stop_loss_fraction(params)
+            stop_price = price * (1 - stop_loss) if stop_loss is not None else None
+            self.open_positions[symbol] = {"entry_price": price, "entry_date": date, "size": position_size,
+                                           "params": params, "stop_price": stop_price}
             self.capital -= entry_cost
 
     def _exit_position(self, symbol: str, price: float, date: datetime) -> None:
