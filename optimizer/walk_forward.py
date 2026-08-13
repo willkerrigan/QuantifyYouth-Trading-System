@@ -298,6 +298,15 @@ class WalkForwardValidator:
         # construction must not be able to slip a leaking window past us.
         validate_no_leakage(self.folds)
 
+        # Recorded so the final interpretation can distinguish "the search found
+        # overfit parameters" from "there was nothing to search".
+        from .grid_search import GridSearchGenerator
+        self._combinations_per_fold = GridSearchGenerator.count_combinations(
+            self.config["strategy"].get("parameters", {}))
+        if self._combinations_per_fold <= 1:
+            logger.warning("Only one parameter combination configured: walk-forward will measure "
+                           "period-to-period variance, not optimization bias.")
+
         logger.info(f"Walk-forward validation: {len(self.folds)} folds over "
                     f"{_as_date_str(self.start_date)} -> {_as_date_str(self.end_date)} "
                     f"({'anchored' if self.anchored else 'rolling'} train window, metric={self.metric})")
@@ -444,9 +453,26 @@ class WalkForwardValidator:
         stability = self.parameter_stability()
         unstable = [name for name, info in stability.items() if info["consistency_pct"] < 50.0]
 
-        if mean_train and mean_test / mean_train < 0.5:
+        # With a single-point grid there is nothing to search, so no amount of
+        # degradation can be evidence of curve-fitting — say so instead of
+        # reporting a fit that never happened.
+        single_point_grid = all(info["unique_values"] == 1 for info in stability.values()) and bool(stability)
+        searched_combinations = getattr(self, "_combinations_per_fold", None)
+        if single_point_grid and (searched_combinations is None or searched_combinations <= 1):
+            return ("Only one parameter combination was searched, so this run cannot detect "
+                    "curve-fitting: it measures period-to-period variance of fixed parameters, "
+                    "not optimization bias. Widen strategy.parameters to test for overfitting.")
+
+        # The ratio test is only meaningful when in-sample performance is positive.
+        # With a negative mean_train, mean_test/mean_train < 0.5 is satisfied
+        # precisely when test does BETTER, which inverts the verdict.
+        if mean_train > 0 and mean_test / mean_train < 0.5:
             verdict = ("Out-of-sample performance is less than half of in-sample: strong evidence "
                        "the parameters are curve-fit to each training window.")
+        elif mean_train <= 0:
+            verdict = (f"In-sample performance was not positive (mean train {mean_train:.4f}), so "
+                       f"train-vs-test ratios are not meaningful here; judge this on the raw "
+                       f"per-fold numbers rather than on degradation.")
         elif sum(1 for d in degradations if d > 0) == len(degradations):
             verdict = ("Every fold degraded from train to test, though not catastrophically: some "
                        "optimization bias is present, as expected.")
