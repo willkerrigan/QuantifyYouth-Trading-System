@@ -55,6 +55,17 @@ python scripts/run_backtest.py --config config/backtest_config.yaml
 python scripts/run_live_trading.py --config config/broker_config.yaml
 ```
 
+### Run Out-of-Sample Test
+
+`config.backtest.in_sample_end_date` walls off a held-out window: the optimizer
+above only ever sees data up through that date. Once parameters are chosen,
+run them once against the untouched remainder to check for overfitting:
+
+```bash
+python scripts/run_out_of_sample.py --config config/backtest_config.yaml \
+  --params output/optimization_summary_<timestamp>.json --output output/
+```
+
 ## Project Structure
 
 - **backtester/** - Core backtest engine with trade logging

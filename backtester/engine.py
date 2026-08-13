@@ -52,7 +52,11 @@ class BacktestEngine:
         self.capital = self.initial_capital
         self.open_positions = {}
 
-    def run(self, symbols: List[str], params: Dict) -> Tuple[float, List[Trade], pd.DataFrame]:
+    def run(self, symbols: List[str], params: Dict, start_date: Optional[str] = None,
+            end_date: Optional[str] = None) -> Tuple[float, List[Trade], pd.DataFrame]:
+        """Run the backtest. start_date/end_date (inclusive) restrict which loaded
+        bars are simulated, e.g. to confine an optimization run to an in-sample
+        window while leaving later data untouched for out-of-sample testing."""
         logger.info(f"Starting backtest with params: {params}")
         self.trades = []
         self.equity_curve = []
@@ -73,6 +77,10 @@ class BacktestEngine:
             return self.capital, [], pd.DataFrame()
 
         dates = self._get_aligned_dates(data)
+        if start_date is not None:
+            dates = [d for d in dates if d >= pd.Timestamp(start_date)]
+        if end_date is not None:
+            dates = [d for d in dates if d <= pd.Timestamp(end_date)]
         for date in dates:
             daily_data = {sym: df.loc[date] for sym, df in data.items() if date in df.index}
             signals = self.strategy_func(daily_data, self.open_positions, params)

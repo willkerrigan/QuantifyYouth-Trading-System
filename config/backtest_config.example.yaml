@@ -1,6 +1,11 @@
 backtest:
   start_date: "2023-01-01"
   end_date: "2026-07-14"
+  # Optimizer never sees bars after this date (see optimizer/param_optimizer.py).
+  # Data from in_sample_end_date through end_date is the held-out out-of-sample
+  # window: run scripts/run_out_of_sample.py against it only after parameters are
+  # locked in, and only once, to avoid re-introducing look-ahead bias.
+  in_sample_end_date: "2025-06-30"
   initial_capital: 100000
   commission: 0.001
   slippage: 0.0002

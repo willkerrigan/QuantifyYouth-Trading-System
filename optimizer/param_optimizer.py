@@ -26,13 +26,22 @@ class ParameterOptimizer:
     def optimize(self, symbols: List[str]) -> Tuple[Dict, List[Dict]]:
         param_ranges = self.config["strategy"].get("parameters", {})
         total_combos = GridSearchGenerator.count_combinations(param_ranges)
-        logger.info(f"Starting parameter optimization: {total_combos} combinations")
+
+        in_sample_end_date = self.config["backtest"].get("in_sample_end_date")
+        if not in_sample_end_date:
+            raise ValueError(
+                "config.backtest.in_sample_end_date is required: the optimizer must not be "
+                "allowed to see data past the in-sample window, or its 'best' parameters will "
+                "be tuned on the out-of-sample period and look better than they really are."
+            )
+        logger.info(f"Starting parameter optimization: {total_combos} combinations "
+                   f"(in-sample data through {in_sample_end_date})")
 
         combinations = list(GridSearchGenerator.generate_combinations(param_ranges))
         self.results = []
 
         with ProcessPoolExecutor(max_workers=self.workers) as executor:
-            futures = {executor.submit(self._run_backtest_wrapper, symbols, params): (i, params)
+            futures = {executor.submit(self._run_backtest_wrapper, symbols, params, in_sample_end_date): (i, params)
                       for i, params in enumerate(combinations)}
             for future in as_completed(futures):
                 idx, params = futures[future]
@@ -50,10 +59,10 @@ class ParameterOptimizer:
         logger.info(f"Optimization complete. Best {self.metric}: {best_result[self.metric]:.4f}")
         return best_result["parameters"], self.results
 
-    def _run_backtest_wrapper(self, symbols: List[str], params: Dict) -> Optional[Dict]:
+    def _run_backtest_wrapper(self, symbols: List[str], params: Dict, in_sample_end_date: str) -> Optional[Dict]:
         try:
             engine = BacktestEngine(self.config, self.strategy_func)
-            final_equity, trades, equity_curve = engine.run(symbols, params)
+            final_equity, trades, equity_curve = engine.run(symbols, params, end_date=in_sample_end_date)
             metrics = RiskMetrics.calculate_metrics_summary(trades, equity_curve, self.config["backtest"]["initial_capital"])
             return {"parameters": params, "final_equity": final_equity, "num_trades": len(trades),
                    "trades": trades, "equity_curve": equity_curve, **metrics}
