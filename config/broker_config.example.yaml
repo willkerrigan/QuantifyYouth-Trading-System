@@ -10,6 +10,10 @@ trading:
   
 position_management:
   max_open_positions: 10
+  # Fraction of available buying power deployed into each new position.
+  # Must be > 0; defaults to 0.1 when omitted. Orders whose notional value
+  # exceeds available buying power are refused.
+  max_position_pct: 0.1
   position_size_mode: "equal"
   trailing_stop: 0.05
   
