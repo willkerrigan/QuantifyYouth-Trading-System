@@ -48,6 +48,14 @@ class Trade:
         }
 
 
+DEFAULT_MAX_POSITION_SIZE = 0.1
+DEFAULT_MAX_LEVERAGE = 1.0
+
+# Leverage is compared against a float sum of notionals, so an entry that lands
+# exactly on the cap must not be rejected by accumulated binary-float error.
+_LEVERAGE_TOLERANCE = 1e-9
+
+
 class BacktestEngine:
     def __init__(self, config: Dict, strategy_func, data_loader: Optional[DataLoader] = None,
                  prepare_data_func: Optional[callable] = None):
@@ -58,10 +66,51 @@ class BacktestEngine:
         self.initial_capital = config["backtest"]["initial_capital"]
         self.commission = config["backtest"].get("commission", 0.001)
         self.slippage = config["backtest"].get("slippage", 0.0)
+        # The `risk:` block is optional; absent or empty means "use the defaults",
+        # which reproduce the engine's original hardcoded behaviour exactly.
+        risk_config = config.get("risk") or {}
+        self.max_position_size = self._resolve_risk_fraction(
+            risk_config.get("max_position_size"), "max_position_size",
+            DEFAULT_MAX_POSITION_SIZE, warn_above_one=True)
+        self.max_leverage = self._resolve_risk_fraction(
+            risk_config.get("max_leverage"), "max_leverage",
+            DEFAULT_MAX_LEVERAGE, warn_above_one=False)
         self.trades = []
         self.equity_curve = []
         self.capital = self.initial_capital
         self.open_positions = {}
+
+    @staticmethod
+    def _resolve_risk_fraction(raw, name: str, default: float, warn_above_one: bool) -> float:
+        """Coerce a risk setting to a usable positive float, falling back to `default`.
+
+        A bad risk limit is worse than a missing one: silently sizing off `None` or
+        a negative number would either crash mid-run or invert the guardrail. Every
+        rejection is logged so a typo in the config surfaces instead of being absorbed.
+        """
+        if raw is None:
+            return default
+        # bool is a subclass of int, and `max_position_size: true` is a config typo,
+        # not a request for 100% of equity in one name.
+        if isinstance(raw, bool):
+            logger.warning(f"Ignoring non-numeric risk.{name}: {raw!r}. Using default {default}.")
+            return default
+        try:
+            value = float(raw)
+        except (TypeError, ValueError):
+            logger.warning(f"Ignoring non-numeric risk.{name}: {raw!r}. Using default {default}.")
+            return default
+        if not np.isfinite(value):
+            logger.warning(f"Ignoring non-finite risk.{name}: {raw!r}. Using default {default}.")
+            return default
+        if value <= 0:
+            logger.warning(f"Ignoring non-positive risk.{name}: {value}. Using default {default}.")
+            return default
+        if warn_above_one and value > 1.0:
+            logger.warning(
+                f"risk.{name} is {value}, i.e. more than 100% of equity in a single "
+                f"position. Proceeding, but this is almost certainly not intended.")
+        return value
 
     def run(self, symbols: List[str], params: Dict, start_date: Optional[str] = None,
             end_date: Optional[str] = None) -> Tuple[float, List[Trade], pd.DataFrame]:
@@ -122,7 +171,8 @@ class BacktestEngine:
                 if symbol in stopped_out:
                     continue
                 if signal == "BUY" and symbol not in self.open_positions:
-                    self._enter_position(symbol, daily_data[symbol]["close"], date, params)
+                    self._enter_position(symbol, daily_data[symbol]["close"], date, params,
+                                         daily_data)
                 elif signal == "SELL" and symbol in self.open_positions:
                     self._exit_position(symbol, daily_data[symbol]["close"], date)
 
@@ -192,14 +242,39 @@ class BacktestEngine:
                 stopped_out.add(symbol)
         return stopped_out
 
-    def _enter_position(self, symbol: str, price: float, date: datetime, params: Dict) -> None:
+    def _open_notional(self, daily_data: Optional[Dict]) -> float:
+        """Market value of every open position, marked to this bar."""
+        if daily_data is None:
+            return sum(pos["size"] * pos["entry_price"] for pos in self.open_positions.values())
+        return self._mark_to_market(daily_data) - self.capital
+
+    def _enter_position(self, symbol: str, price: float, date: datetime, params: Dict,
+                        daily_data: Optional[Dict] = None) -> None:
         # Buying lifts the fill above the quoted price; selling pushes it below.
         fill_price = price * (1 + self.slippage)
-        position_size = int((self.capital * 0.1) / fill_price)
+        # Size off total equity (cash + open positions), not cash alone. Sizing off
+        # cash shrinks every successive position as capital gets deployed, so the
+        # tenth signal of a run gets a far smaller bet than the first for no reason
+        # the strategy asked for.
+        equity = self._mark_to_market(daily_data) if daily_data is not None else self.capital
+        position_size = int((equity * self.max_position_size) / fill_price)
         # A size of 0 costs nothing and would otherwise be recorded as a real
         # position: it occupies open_positions, blocks every later entry in the
         # symbol, and closes as a phantom 0-PnL trade that skews the win rate.
         if position_size <= 0:
+            return
+        # Gross exposure guardrail: the notional already at risk plus this entry
+        # must stay within max_leverage x equity. Breaching it skips the entry
+        # rather than aborting the run — a blocked signal is a risk decision,
+        # not an error.
+        new_notional = position_size * fill_price
+        open_notional = self._open_notional(daily_data)
+        leverage_cap = self.max_leverage * equity
+        if open_notional + new_notional > leverage_cap + _LEVERAGE_TOLERANCE:
+            logger.info(
+                f"Skipping {symbol} entry on {date}: notional {open_notional + new_notional:.2f} "
+                f"would exceed max_leverage {self.max_leverage} x equity {equity:.2f} "
+                f"= {leverage_cap:.2f}.")
             return
         entry_cost = position_size * fill_price * (1 + self.commission)
         if entry_cost <= self.capital:

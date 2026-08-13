@@ -1,3 +1,5 @@
+import logging
+
 import pytest
 import pandas as pd
 from datetime import datetime
@@ -214,6 +216,140 @@ def test_total_data_load_failure_raises_instead_of_reporting_zero_trades():
     engine = BacktestEngine(_FRICTIONLESS, _hold_strategy, data_loader=_FailingLoader())
     with pytest.raises(RuntimeError, match="No data could be loaded"):
         engine.run(["SPY"], {})
+
+
+# --- risk: config block ------------------------------------------------------
+
+# A flat 100.00 tape, so every position size below is exact arithmetic rather
+# than a rounding artifact.
+_FLAT_ROWS = [{"open": 100.0, "high": 101.0, "low": 99.0, "close": 100.0, "volume": 1000}] * 3
+
+
+def _risk_config(**risk):
+    return {"backtest": {"initial_capital": 100000, "commission": 0.0, "slippage": 0.0},
+            "risk": risk}
+
+
+def test_configured_max_position_size_is_used_for_sizing():
+    engine = BacktestEngine(_risk_config(max_position_size=0.25), _buy_first_bar_then_hold,
+                            data_loader=_StubOHLCDataLoader(_FLAT_ROWS))
+    engine.run(["SPY"], {})
+
+    # 25% of 100,000 equity at 100.00 a share.
+    assert engine.max_position_size == 0.25
+    assert engine.open_positions["SPY"]["size"] == 250
+
+
+@pytest.mark.parametrize("config", [
+    {"backtest": {"initial_capital": 100000, "commission": 0.0, "slippage": 0.0}},   # no risk block
+    {"backtest": {"initial_capital": 100000, "commission": 0.0, "slippage": 0.0}, "risk": {}},
+    {"backtest": {"initial_capital": 100000, "commission": 0.0, "slippage": 0.0}, "risk": None},
+])
+def test_max_position_size_defaults_to_ten_percent_when_unset(config):
+    engine = BacktestEngine(config, _buy_first_bar_then_hold,
+                            data_loader=_StubOHLCDataLoader(_FLAT_ROWS))
+    engine.run(["SPY"], {})
+
+    assert engine.max_position_size == 0.1
+    assert engine.open_positions["SPY"]["size"] == 100
+
+
+@pytest.mark.parametrize("bad", ["abc", None, 0, -0.5, float("nan"), float("inf"), True, [0.2]])
+def test_invalid_max_position_size_falls_back_to_default_with_a_warning(bad, caplog):
+    # `None` is the one "invalid" value that means unset, so it must not warn.
+    with caplog.at_level(logging.WARNING, logger="backtester.engine"):
+        engine = BacktestEngine(_risk_config(max_position_size=bad), _buy_first_bar_then_hold,
+                                data_loader=_StubOHLCDataLoader(_FLAT_ROWS))
+    engine.run(["SPY"], {})
+
+    assert engine.max_position_size == 0.1
+    assert engine.open_positions["SPY"]["size"] == 100
+    warned = any("max_position_size" in r.message for r in caplog.records
+                 if r.levelno >= logging.WARNING)
+    assert warned is (bad is not None)
+
+
+def test_max_position_size_above_one_warns_but_is_honoured(caplog):
+    with caplog.at_level(logging.WARNING, logger="backtester.engine"):
+        engine = BacktestEngine(_risk_config(max_position_size=1.5, max_leverage=3.0),
+                                _buy_first_bar_then_hold,
+                                data_loader=_StubOHLCDataLoader(_FLAT_ROWS))
+
+    assert engine.max_position_size == 1.5
+    assert any("max_position_size" in r.message and "100%" in r.message
+               for r in caplog.records if r.levelno >= logging.WARNING)
+
+
+def test_max_leverage_blocks_an_entry_that_would_breach_the_cap(caplog):
+    # 30% per position against a 0.5x gross cap: the first entry fits (0.3x), the
+    # second would take gross exposure to 0.6x and must be skipped.
+    engine = BacktestEngine(_risk_config(max_position_size=0.3, max_leverage=0.5),
+                            _buy_first_bar_then_hold,
+                            data_loader=_StubOHLCDataLoader(_FLAT_ROWS))
+    with caplog.at_level(logging.INFO, logger="backtester.engine"):
+        engine.run(["SPY", "QQQ"], {})
+
+    assert set(engine.open_positions) == {"SPY"}
+    assert engine.open_positions["SPY"]["size"] == 300
+    assert any("max_leverage" in r.message for r in caplog.records)
+    # Cash was never the binding constraint: 70,000 was still uncommitted.
+    assert engine.capital == pytest.approx(70000.0)
+
+
+def test_second_entry_is_allowed_when_max_leverage_has_room():
+    engine = BacktestEngine(_risk_config(max_position_size=0.3, max_leverage=1.0),
+                            _buy_first_bar_then_hold,
+                            data_loader=_StubOHLCDataLoader(_FLAT_ROWS))
+    engine.run(["SPY", "QQQ"], {})
+
+    assert set(engine.open_positions) == {"SPY", "QQQ"}
+
+
+def test_max_leverage_defaults_to_one_and_is_validated(caplog):
+    engine = BacktestEngine(_risk_config(max_position_size=0.1), _buy_first_bar_then_hold,
+                            data_loader=_StubOHLCDataLoader(_FLAT_ROWS))
+    assert engine.max_leverage == 1.0
+
+    with caplog.at_level(logging.WARNING, logger="backtester.engine"):
+        bad = BacktestEngine(_risk_config(max_leverage="lots"), _buy_first_bar_then_hold,
+                             data_loader=_StubOHLCDataLoader(_FLAT_ROWS))
+    assert bad.max_leverage == 1.0
+    assert any("max_leverage" in r.message for r in caplog.records
+               if r.levelno >= logging.WARNING)
+
+
+def test_sizing_uses_total_equity_not_just_remaining_cash():
+    """Deploying cash must not shrink later positions: equity is unchanged by a buy."""
+    engine = BacktestEngine(_risk_config(max_position_size=0.1), _buy_first_bar_then_hold,
+                            data_loader=_StubOHLCDataLoader(_FLAT_ROWS))
+    engine.run(["SPY", "QQQ", "IWM"], {})
+
+    sizes = [engine.open_positions[s]["size"] for s in ("SPY", "QQQ", "IWM")]
+    # Sizing off cash alone would give 100, then 90, then 81 as capital drains.
+    assert sizes == [100, 100, 100]
+    assert engine.capital == pytest.approx(70000.0)
+
+
+def test_equity_sizing_grows_positions_as_the_book_appreciates():
+    """Equity marked to market, not cost basis: a winner funds a larger next entry."""
+    rows = [
+        {"open": 100.0, "high": 101.0, "low": 99.0, "close": 100.0, "volume": 1000},
+        {"open": 200.0, "high": 201.0, "low": 199.0, "close": 200.0, "volume": 1000},
+    ]
+
+    def buy_spy_then_qqq(daily_data, open_positions, params):
+        if not open_positions:
+            return {"SPY": "BUY"}
+        return {"QQQ": "BUY"} if "QQQ" not in open_positions else {}
+
+    engine = BacktestEngine(_risk_config(max_position_size=0.1, max_leverage=2.0),
+                            buy_spy_then_qqq, data_loader=_StubOHLCDataLoader(rows))
+    engine.run(["SPY", "QQQ"], {})
+
+    # Bar 0: 10% of 100,000 at 100 -> 100 shares, 90,000 cash left.
+    # Bar 1: SPY is now worth 20,000, so equity is 110,000; 10% of that at 200 -> 55 shares.
+    assert engine.open_positions["SPY"]["size"] == 100
+    assert engine.open_positions["QQQ"]["size"] == 55
 
 
 def test_periods_per_year_for_daily_timeframe():
