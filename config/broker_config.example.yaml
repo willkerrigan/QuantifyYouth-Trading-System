@@ -1,0 +1,25 @@
+alpaca:
+  api_key: "${ALPACA_API_KEY}"
+  secret_key: "${ALPACA_SECRET_KEY}"
+  base_url: "https://paper-api.alpaca.markets"
+
+trading:
+  paper_trading: true
+  market: "US"
+  account_type: "margin"
+  
+position_management:
+  max_open_positions: 10
+  position_size_mode: "equal"
+  trailing_stop: 0.05
+  
+signal_processing:
+  signal_ttl_seconds: 60
+  batch_size: 5
+  retry_on_failure: true
+  retry_max_attempts: 3
+
+logging:
+  level: "INFO"
+  file: "logs/trading.log"
+  console: true
