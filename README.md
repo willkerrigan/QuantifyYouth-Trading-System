@@ -30,6 +30,14 @@ cp config/backtest_config.example.yaml config/backtest_config.yaml
 cp config/broker_config.example.yaml config/broker_config.yaml
 ```
 
+**Never commit `config/broker_config.yaml` (or any non-`.example` file under `config/`) once it
+contains real Alpaca `api_key`/`secret_key` values.** These files are excluded via `.gitignore`
+(`config/*.yaml` / `config/*.yml`, with the `.example` templates explicitly re-included), so a
+plain `git add -A` will not stage them. Still, double-check with `git status` before committing,
+and prefer sourcing keys from environment variables or a secrets manager over checking in any
+filled-in YAML at all. If real keys are ever committed, treat them as compromised: rotate them in
+the Alpaca dashboard immediately, even after removing them from history.
+
 ## Usage
 
 ### Run Parameter Optimization

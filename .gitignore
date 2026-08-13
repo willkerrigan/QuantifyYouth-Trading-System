@@ -243,3 +243,10 @@ data/*
 
 # VS Code local settings
 .vscode/
+
+# Real config files with live credentials (Alpaca API keys, etc).
+# Only the .example.yaml templates should ever be committed.
+config/*.yaml
+config/*.yml
+!config/*.example.yaml
+!config/*.example.yml
