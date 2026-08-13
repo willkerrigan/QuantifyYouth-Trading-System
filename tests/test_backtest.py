@@ -58,6 +58,95 @@ def test_run_restricts_to_date_window_with_tz_aware_intraday_data():
     assert len(curve) == 8
 
 
+class _StubOHLCDataLoader:
+    """Serves a caller-supplied OHLC frame so stop-loss triggers can be tested exactly."""
+
+    def __init__(self, rows):
+        dates = pd.date_range("2024-01-01", periods=len(rows), freq="D")
+        self._df = pd.DataFrame(rows, index=dates)
+
+    def load(self, symbol, force_refresh=False):
+        return self._df
+
+
+def _buy_first_bar_then_hold(daily_data, open_positions, params):
+    """Opens on the first bar and otherwise never trades, so any exit must come from the stop."""
+    return {symbol: ("BUY" if symbol not in open_positions else "HOLD") for symbol in daily_data}
+
+
+# Bar 0 opens the position at 100. Bar 1 dips to 97 (below a 2% stop at 98) but closes
+# back at 100, so only a stop that looks at the low can catch it.
+_DIP_ROWS = [
+    {"open": 100.0, "high": 101.0, "low": 99.0, "close": 100.0, "volume": 1000},
+    {"open": 100.0, "high": 101.0, "low": 97.0, "close": 100.0, "volume": 1000},
+    {"open": 100.0, "high": 101.0, "low": 99.0, "close": 100.0, "volume": 1000},
+]
+
+_CONFIG = {"backtest": {"initial_capital": 100000, "commission": 0.001, "slippage": 0.0}}
+
+
+def test_stop_loss_triggers_when_low_breaches_level():
+    engine = BacktestEngine(_CONFIG, _buy_first_bar_then_hold,
+                            data_loader=_StubOHLCDataLoader(_DIP_ROWS))
+    _, trades, _ = engine.run(["SPY"], {"stop_loss": 0.02})
+
+    # The 97.0 low on bar 1 breaches the 98.0 stop even though that bar closed at 100.
+    assert len(trades) == 1
+    assert trades[0].entry_date == pd.Timestamp("2024-01-01")
+    assert trades[0].exit_date == pd.Timestamp("2024-01-02")
+
+
+def test_stop_loss_exit_price_is_the_stop_price_not_the_close():
+    engine = BacktestEngine(_CONFIG, _buy_first_bar_then_hold,
+                            data_loader=_StubOHLCDataLoader(_DIP_ROWS))
+    _, trades, _ = engine.run(["SPY"], {"stop_loss": 0.02})
+
+    # entry 100 * (1 - 0.02) == 98.0, even though the bar closed at 100.
+    assert trades[0].entry_price == 100.0
+    assert trades[0].exit_price == pytest.approx(98.0)
+    assert trades[0].realized_pnl == pytest.approx(-2.0 * trades[0].size)
+
+
+def test_stop_loss_does_not_trigger_when_low_stays_above_level():
+    engine = BacktestEngine(_CONFIG, _buy_first_bar_then_hold,
+                            data_loader=_StubOHLCDataLoader(_DIP_ROWS))
+    # A 5% stop sits at 95.0; the 97.0 low never reaches it.
+    _, trades, _ = engine.run(["SPY"], {"stop_loss": 0.05})
+
+    assert trades == []
+    assert "SPY" in engine.open_positions
+
+
+@pytest.mark.parametrize("params", [{}, {"stop_loss": None}, {"stop_loss": 0}])
+def test_no_stop_loss_param_leaves_behavior_unchanged(params):
+    engine = BacktestEngine(_CONFIG, _buy_first_bar_then_hold,
+                            data_loader=_StubOHLCDataLoader(_DIP_ROWS))
+    final_capital, trades, curve = engine.run(["SPY"], params)
+
+    baseline = BacktestEngine(_CONFIG, _buy_first_bar_then_hold,
+                              data_loader=_StubOHLCDataLoader(_DIP_ROWS))
+    baseline_capital, baseline_trades, baseline_curve = baseline.run(["SPY"], {})
+
+    assert trades == [] and baseline_trades == []
+    assert final_capital == baseline_capital
+    assert len(curve) == len(baseline_curve) == 3
+    assert engine.open_positions["SPY"]["entry_price"] == 100.0
+
+
+def test_stopped_out_position_ignores_the_strategys_signal_that_bar():
+    def always_buy(daily_data, open_positions, params):
+        return {symbol: "BUY" for symbol in daily_data}
+
+    engine = BacktestEngine(_CONFIG, always_buy, data_loader=_StubOHLCDataLoader(_DIP_ROWS))
+    _, trades, _ = engine.run(["SPY"], {"stop_loss": 0.02})
+
+    # Bar 1 stops out; the BUY on that same bar must not re-open the position.
+    # Only bar 2's BUY re-enters, so exactly one trade is closed.
+    assert len(trades) == 1
+    assert trades[0].exit_date == pd.Timestamp("2024-01-02")
+    assert engine.open_positions["SPY"]["entry_date"] == pd.Timestamp("2024-01-03")
+
+
 def test_periods_per_year_for_daily_timeframe():
     assert periods_per_year_for_timeframe("1d") == 252
 
