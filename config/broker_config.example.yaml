@@ -19,6 +19,37 @@ position_management:
   position_size_mode: "equal"
   trailing_stop: 0.05
   
+risk:
+  # --- MAX DAILY LOSS (both keys optional; omit either or both to disable) ---
+  # Loss is measured against account equity at session start, so it covers
+  # realized and unrealized P&L together. When both are set the tighter binds.
+  max_daily_loss_pct: 0.02       # 2% of session-start equity
+  max_daily_loss_amount: 5000    # absolute currency amount
+  # Conservative default: a breach HALTS NEW ENTRIES and leaves open positions
+  # alone. Set true to also force-close everything - force-closing is itself
+  # risky (slippage, closing into a gap), so it is opt-in.
+  liquidate_on_daily_loss: false
+
+  # --- KILL SWITCH ---
+  # Create this file to halt trading before the next order; the trader keeps
+  # running and never interrupts an in-flight order. Once tripped it STAYS
+  # tripped: delete the file AND call LiveTrader.reset_kill_switch(). Omit the
+  # key to disable the file switch (LiveTrader.halt() still works).
+  kill_switch_file: "run/KILL_SWITCH"
+
+  # --- MARKET HOURS GATE ---
+  # ON BY DEFAULT: simply having this `risk:` section arms it, and outside the
+  # regular US equity session the trader skips the whole poll cycle. (A config
+  # with no `risk:` section at all keeps the old always-on behaviour.)
+  # NOTE: weekday + time-of-day only - MARKET HOLIDAYS ARE NOT TRACKED.
+  # DST is handled via zoneinfo, so never replace the timezone with a UTC offset.
+  market_hours:
+    enabled: true
+    allow_outside_hours: false   # emergency override; keep false
+    timezone: "America/New_York"
+    open: "09:30"
+    close: "16:00"
+
 signal_processing:
   signal_ttl_seconds: 60
   batch_size: 5
