@@ -5,6 +5,7 @@ from pathlib import Path
 import yaml
 from optimizer.param_optimizer import ParameterOptimizer
 from backtester.strategies import get_strategy
+from config.validation import validate_config
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
@@ -18,6 +19,11 @@ def main():
 
     with open(args.config) as f:
         config = yaml.safe_load(f)
+
+    # Fail fast on a malformed config: a bad config has repeatedly produced
+    # plausible-looking but invalid results rather than an obvious crash.
+    for warning in validate_config(config):
+        logger.warning("config: %s", warning)
 
     symbols = config["data"]["symbols"]
     metric = config["optimization"].get("metric", "sharpe_ratio")

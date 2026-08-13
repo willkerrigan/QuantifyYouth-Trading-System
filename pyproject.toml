@@ -23,7 +23,7 @@ dev = [
 
 [tool.setuptools]
 # Flat layout: the top-level source packages live at the repo root.
-packages = ["backtester", "optimizer", "execution"]
+packages = ["backtester", "optimizer", "execution", "config"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
