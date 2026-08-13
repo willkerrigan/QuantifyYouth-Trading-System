@@ -9,33 +9,52 @@ from .signal_handler import SignalHandler, Signal, SignalType
 logger = logging.getLogger(__name__)
 
 
+DEFAULT_POLL_INTERVAL_SECONDS = 60
+
+
 class LiveTrader:
-    def __init__(self, broker_config: Dict, strategy_name: str = "ma_crossover"):
+    def __init__(self, broker_config: Dict, strategy_name: str = "ma_crossover",
+                 strategy_runner=None, poll_interval: Optional[float] = None):
         self.broker_config = broker_config
         self.strategy_name = strategy_name
         self.broker = BrokerAdapter(broker_config)
         self.signal_handler = SignalHandler(broker_config)
+        self.strategy_runner = strategy_runner
         self.running = False
         self.trades_executed = []
         self.max_open_positions = broker_config.get("position_management", {}).get("max_open_positions", 10)
+        if poll_interval is None:
+            poll_interval = broker_config.get("live", {}).get(
+                "poll_interval_seconds", DEFAULT_POLL_INTERVAL_SECONDS)
+        self.poll_interval = max(float(poll_interval), 0.0)
 
     def start(self) -> None:
         self.running = True
         logger.info("="*60)
         logger.info(f"Live Trading Started: {self.strategy_name}")
         logger.info(f"Paper Trading: {self.broker.paper_trading}")
+        if not self.broker.paper_trading:
+            logger.warning("!!! LIVE (NON-PAPER) TRADING IS ACTIVE - REAL MONEY IS AT RISK !!!")
+        logger.info(f"Poll interval: {self.poll_interval}s")
         logger.info("="*60)
         account = self.broker.get_account()
         logger.info(f"Initial Account: {account}")
 
         try:
             while self.running:
+                if self.strategy_runner is not None:
+                    try:
+                        self.strategy_runner.poll()
+                    except Exception as e:
+                        # A bad poll must not kill the trade loop or strand open positions.
+                        logger.error(f"Strategy poll failed: {e}")
                 signal = self.signal_handler.get_next_signal()
-                if signal:
+                while signal:
                     self._execute_signal(signal)
+                    signal = self.signal_handler.get_next_signal()
                 positions = self.broker.get_positions()
                 logger.debug(f"Open positions: {len(positions)}")
-                time.sleep(1)
+                time.sleep(self.poll_interval)
         except KeyboardInterrupt:
             self.stop()
         except Exception as e:
