@@ -434,13 +434,27 @@ def test_scalar_parameters_are_allowed():
 # the unread risk block
 # --------------------------------------------------------------------------
 
-def test_risk_section_warns_that_it_is_not_enforced():
+def test_valid_risk_section_produces_no_warnings():
+    """risk.max_position_size / max_leverage are enforced by the engine now."""
     config = valid_config()
     config["risk"] = {"max_position_size": 0.1, "max_leverage": 1.0}
+    assert validate_config(config) == []
+
+
+def test_risk_section_warns_on_unusable_values():
+    config = valid_config()
+    config["risk"] = {"max_position_size": "lots", "max_leverage": -2}
     warnings = validate_config(config)
-    assert len(warnings) == 1
-    assert "'risk' section" in warnings[0]
-    assert "NOT enforced" in warnings[0]
+    assert len(warnings) == 2
+    assert any("max_position_size" in w for w in warnings)
+    assert any("max_leverage" in w for w in warnings)
+
+
+def test_non_mapping_risk_section_is_a_hard_error():
+    config = valid_config()
+    config["risk"] = "yes please"
+    with pytest.raises(ConfigValidationError, match="must be a mapping"):
+        validate_config(config)
 
 
 # --------------------------------------------------------------------------
@@ -474,5 +488,5 @@ def test_multiple_warnings_are_all_returned():
     config = valid_config()
     config["backtest"]["commission"] = 1
     config["strategy"]["parameters"] = {"rsi_buy_threshold": []}
-    config["risk"] = {"max_leverage": 2.0}
+    config["risk"] = {"max_leverage": "not-a-number"}
     assert len(validate_config(config)) == 3

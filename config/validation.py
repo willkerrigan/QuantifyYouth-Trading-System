@@ -274,11 +274,24 @@ def validate_config(config: Dict[str, Any]) -> List[str]:
     if "strategy" in sections:
         _check_strategy(sections["strategy"], errors, warnings)
 
-    if "risk" in config:
-        warnings.append(
-            "the 'risk' section is present but no part of the backtester, optimizer or execution code reads it; "
-            "its limits (e.g. max_position_size, max_leverage) are NOT enforced by a run"
-        )
+    # risk.max_position_size and risk.max_leverage are enforced by BacktestEngine;
+    # validate their shape here so a typo is caught before a run silently falls
+    # back to the defaults mid-backtest.
+    risk = config.get("risk")
+    if risk is not None:
+        if not isinstance(risk, dict):
+            errors.append(f"'risk' must be a mapping, got {type(risk).__name__}: {risk!r}")
+        else:
+            for key in ("max_position_size", "max_leverage"):
+                value = risk.get(key)
+                if value is None:
+                    continue
+                if isinstance(value, bool) or not isinstance(value, (int, float)):
+                    warnings.append(f"risk.{key} is {value!r} (not a number); the engine will "
+                                    f"ignore it and use its default")
+                elif value <= 0:
+                    warnings.append(f"risk.{key} is {value}, which is not a positive fraction; "
+                                    f"the engine will ignore it and use its default")
 
     if errors:
         raise ConfigValidationError(errors)
