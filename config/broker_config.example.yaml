@@ -1,7 +1,9 @@
 alpaca:
   api_key: "${ALPACA_API_KEY}"
   secret_key: "${ALPACA_SECRET_KEY}"
-  base_url: "https://paper-api.alpaca.markets"
+  # Endpoint is chosen by trading.paper_trading (paper vs live). Set url_override
+  # only for non-standard endpoints such as the broker sandbox.
+  # url_override: "https://paper-api.alpaca.markets"
 
 trading:
   paper_trading: true

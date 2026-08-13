@@ -8,7 +8,11 @@ scipy==1.11.2
 # backtrader==1.9.94.1 has no files on PyPI, so `pip install -r requirements.txt`
 # failed outright in a clean environment. Removed rather than re-pinned; add back
 # with a resolvable version if either is actually adopted.
-alpaca-py==0.20.0
+# alpaca-py 0.20.0 capped websockets<12 while yfinance 0.2.65 requires
+# websockets>=13, making the pair uninstallable (CI failed on ResolutionImpossible).
+# 0.44.0 lifts the cap; the APIs used here (TradingClient, StockHistoricalDataClient,
+# MarketOrderRequest, OrderSide, TimeInForce) are unchanged.
+alpaca-py==0.44.0
 yfinance==0.2.65
 
 # Configuration

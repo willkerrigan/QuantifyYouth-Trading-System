@@ -18,11 +18,16 @@ class BrokerAdapter:
             from alpaca.trading.client import TradingClient
             api_key = self.alpaca_config.get("api_key")
             secret_key = self.alpaca_config.get("secret_key")
-            base_url = self.alpaca_config.get("base_url", "https://paper-api.alpaca.markets")
             if not api_key or not secret_key:
                 raise ValueError("Alpaca API key and secret key required")
-            self.client = TradingClient(api_key=api_key, secret_key=secret_key, base_url=base_url)
-            logger.info(f"Connected to Alpaca: {base_url}")
+            # TradingClient selects the endpoint from `paper` (url_override exists
+            # for e.g. the sandbox); the old base_url kwarg it was passed here does
+            # not exist and raised TypeError on every real connection attempt.
+            url_override = self.alpaca_config.get("url_override")
+            self.client = TradingClient(api_key=api_key, secret_key=secret_key,
+                                        paper=self.paper_trading, url_override=url_override)
+            logger.info(f"Connected to Alpaca (paper={self.paper_trading}"
+                        + (f", url_override={url_override}" if url_override else "") + ")")
         except ImportError:
             raise ImportError("alpaca-py required. Install with: pip install alpaca-py")
 
