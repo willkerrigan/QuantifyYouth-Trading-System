@@ -8,7 +8,7 @@ from typing import Dict, List, Optional, Tuple
 import pandas as pd
 
 from backtester.engine import BacktestEngine
-from backtester.metrics import RiskMetrics
+from backtester.metrics import RiskMetrics, periods_per_year_for_timeframe
 from .grid_search import GridSearchGenerator
 
 logger = logging.getLogger(__name__)
@@ -65,7 +65,9 @@ class ParameterOptimizer:
         try:
             engine = BacktestEngine(self.config, self.strategy_func, prepare_data_func=self.prepare_data_func)
             final_equity, trades, equity_curve = engine.run(symbols, params, end_date=in_sample_end_date)
-            metrics = RiskMetrics.calculate_metrics_summary(trades, equity_curve, self.config["backtest"]["initial_capital"])
+            periods_per_year = periods_per_year_for_timeframe(self.config["data"].get("timeframe", "1d"))
+            metrics = RiskMetrics.calculate_metrics_summary(trades, equity_curve, self.config["backtest"]["initial_capital"],
+                                                             periods_per_year=periods_per_year)
             return {"parameters": params, "final_equity": final_equity, "num_trades": len(trades),
                    "trades": trades, "equity_curve": equity_curve, **metrics}
         except Exception as e:

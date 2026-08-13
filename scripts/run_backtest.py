@@ -4,8 +4,8 @@ import logging
 from pathlib import Path
 import yaml
 from backtester.engine import BacktestEngine
-from backtester.metrics import RiskMetrics
-from backtester.strategies import rsi2_strategy, prepare_rsi2_data
+from backtester.metrics import RiskMetrics, periods_per_year_for_timeframe
+from backtester.strategies import get_strategy
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
@@ -21,9 +21,12 @@ def main():
 
     symbols = config["data"]["symbols"]
     params = {k: v[0] if isinstance(v, list) else v for k, v in config["strategy"]["parameters"].items()}
-    engine = BacktestEngine(config, rsi2_strategy, prepare_data_func=prepare_rsi2_data)
+    strategy_func, prepare_data_func = get_strategy(config["strategy"]["name"])
+    engine = BacktestEngine(config, strategy_func, prepare_data_func=prepare_data_func)
     final_equity, trades, equity_curve = engine.run(symbols, params)
-    metrics = RiskMetrics.calculate_metrics_summary(trades, equity_curve, config["backtest"]["initial_capital"])
+    periods_per_year = periods_per_year_for_timeframe(config["data"].get("timeframe", "1d"))
+    metrics = RiskMetrics.calculate_metrics_summary(trades, equity_curve, config["backtest"]["initial_capital"],
+                                                     periods_per_year=periods_per_year)
 
     logger.info("="*60)
     logger.info("BACKTEST RESULTS")

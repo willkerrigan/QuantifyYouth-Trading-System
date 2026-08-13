@@ -2,6 +2,26 @@ import numpy as np
 import pandas as pd
 from typing import Dict, List
 
+# Regular US equity session length, used to convert an intraday bar count into
+# an equivalent number of trading days for Sharpe-ratio annualization.
+_SESSION_MINUTES = 390
+
+
+def periods_per_year_for_timeframe(timeframe: str) -> int:
+    """Bars per year for a given bar size, so calculate_sharpe_ratio annualizes
+    correctly regardless of whether the equity curve is built from daily or
+    intraday bars. '1d' -> 252; 'Nm'/'Nh' -> 252 * (bars per regular session)."""
+    if timeframe == "1d":
+        return 252
+    unit, value = timeframe[-1], int(timeframe[:-1])
+    if unit == "m":
+        bars_per_day = _SESSION_MINUTES / value
+    elif unit == "h":
+        bars_per_day = (_SESSION_MINUTES / 60) / value
+    else:
+        raise ValueError(f"Unsupported timeframe for annualization: {timeframe}")
+    return round(252 * bars_per_day)
+
 
 class RiskMetrics:
     @staticmethod
@@ -46,13 +66,14 @@ class RiskMetrics:
         return gross_profit / gross_loss if gross_loss != 0 else (0.0 if gross_profit == 0 else float('inf'))
 
     @staticmethod
-    def calculate_metrics_summary(trades: List, equity_curve: pd.DataFrame, initial_capital: float) -> Dict:
+    def calculate_metrics_summary(trades: List, equity_curve: pd.DataFrame, initial_capital: float,
+                                  periods_per_year: int = 252) -> Dict:
         final_equity = equity_curve["equity"].iloc[-1] if not equity_curve.empty else initial_capital
         returns = RiskMetrics.calculate_returns(equity_curve)
         return {
             "total_trades": len(trades),
             "total_return_pct": RiskMetrics.calculate_total_return(initial_capital, final_equity),
-            "sharpe_ratio": RiskMetrics.calculate_sharpe_ratio(returns),
+            "sharpe_ratio": RiskMetrics.calculate_sharpe_ratio(returns, periods_per_year=periods_per_year),
             "max_drawdown": RiskMetrics.calculate_max_drawdown(equity_curve),
             "win_rate_pct": RiskMetrics.calculate_win_rate(trades),
             "profit_factor": RiskMetrics.calculate_profit_factor(trades),

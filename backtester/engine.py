@@ -81,10 +81,16 @@ class BacktestEngine:
             return self.capital, [], pd.DataFrame()
 
         dates = self._get_aligned_dates(data)
+        tz = dates[0].tzinfo if dates else None
         if start_date is not None:
-            dates = [d for d in dates if d >= pd.Timestamp(start_date)]
+            start_ts = pd.Timestamp(start_date)
+            start_ts = start_ts.tz_localize(tz) if tz is not None else start_ts
+            dates = [d for d in dates if d >= start_ts]
         if end_date is not None:
-            dates = [d for d in dates if d <= pd.Timestamp(end_date)]
+            # +1 day so an intraday end_date includes the whole day, not just its midnight instant
+            end_ts = pd.Timestamp(end_date) + pd.Timedelta(days=1)
+            end_ts = end_ts.tz_localize(tz) if tz is not None else end_ts
+            dates = [d for d in dates if d < end_ts]
         for date in dates:
             daily_data = {sym: df.loc[date] for sym, df in data.items() if date in df.index}
             signals = self.strategy_func(daily_data, self.open_positions, params)

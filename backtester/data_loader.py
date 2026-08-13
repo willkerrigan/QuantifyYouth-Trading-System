@@ -17,11 +17,19 @@ class DataLoader:
 
         start_date = self.config["backtest"].get("start_date", "2023-01-01")
         end_date = self.config["backtest"].get("end_date", "2026-07-14")
-        logger.info(f"Loading {symbol} data from {self.source}")
+        interval = self.config.get("data", {}).get("timeframe", "1d")
+        logger.info(f"Loading {symbol} data from {self.source} (interval={interval})")
 
         if self.source == "yahoo":
             import yfinance as yf
-            df = yf.download(symbol, start=start_date, end=end_date, progress=False)
+            if interval == "1d":
+                df = yf.download(symbol, start=start_date, end=end_date, interval=interval, progress=False)
+            else:
+                # Yahoo only retains intraday bars (any interval below 1d) for the
+                # trailing 60 days; configured start_date/end_date can't be honored.
+                logger.warning(f"Yahoo intraday data ({interval}) only covers the trailing 60 days; "
+                               f"ignoring configured start_date/end_date ({start_date} -> {end_date})")
+                df = yf.download(symbol, period="60d", interval=interval, progress=False)
             if isinstance(df.columns, pd.MultiIndex):
                 df.columns = df.columns.get_level_values(0)
         elif self.source == "alpaca":

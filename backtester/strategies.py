@@ -35,3 +35,49 @@ def rsi2_strategy(daily_data: Dict, open_positions: Dict, params: Dict) -> Dict[
         else:
             signals[symbol] = "HOLD"
     return signals
+
+
+def prepare_orb_data(df: pd.DataFrame) -> pd.DataFrame:
+    """Adds 'opening_range_high' and 'is_session_close' columns for orb_strategy.
+    Assumes each row is one intraday bar and the bar interval equals the opening
+    range length (e.g. 15m bars for a 15-minute opening range), so the first bar
+    of each session already covers the whole opening range."""
+    df = df.copy()
+    session = df.index.normalize()
+    df["opening_range_high"] = df.groupby(session)["high"].transform("first")
+    next_session = pd.Series(session, index=df.index).shift(-1)
+    df["is_session_close"] = (session != next_session) | next_session.isna()
+    return df
+
+
+def orb_strategy(daily_data: Dict, open_positions: Dict, params: Dict) -> Dict[str, str]:
+    """Opening range breakout: buy when price breaks above the opening range high,
+    flat by the end of the session (no overnight holds).
+
+    Note: close <= high always holds for a single bar, so this naturally can't fire
+    on the opening bar itself (its own high defines opening_range_high).
+    """
+    signals = {}
+    for symbol, row in daily_data.items():
+        if symbol in open_positions:
+            signals[symbol] = "SELL" if row.get("is_session_close", False) else "HOLD"
+            continue
+        orb_high = row.get("opening_range_high")
+        if orb_high is not None and not pd.isna(orb_high) and row["close"] > orb_high:
+            signals[symbol] = "BUY"
+        else:
+            signals[symbol] = "HOLD"
+    return signals
+
+
+STRATEGIES = {
+    "rsi2": (rsi2_strategy, prepare_rsi2_data),
+    "orb": (orb_strategy, prepare_orb_data),
+}
+
+
+def get_strategy(name: str):
+    try:
+        return STRATEGIES[name]
+    except KeyError:
+        raise ValueError(f"Unknown strategy '{name}'. Available: {list(STRATEGIES)}")

@@ -4,7 +4,7 @@ import logging
 from pathlib import Path
 import yaml
 from optimizer.param_optimizer import ParameterOptimizer
-from backtester.strategies import rsi2_strategy, prepare_rsi2_data
+from backtester.strategies import get_strategy
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
@@ -24,8 +24,9 @@ def main():
     direction = config["optimization"].get("score_direction", "maximize")
     top_n = config["optimization"].get("export_top_n", 10)
 
-    optimizer = ParameterOptimizer(config, rsi2_strategy, metric=metric, direction=direction,
-                                   workers=args.workers, prepare_data_func=prepare_rsi2_data)
+    strategy_func, prepare_data_func = get_strategy(config["strategy"]["name"])
+    optimizer = ParameterOptimizer(config, strategy_func, metric=metric, direction=direction,
+                                   workers=args.workers, prepare_data_func=prepare_data_func)
     best_params, all_results = optimizer.optimize(symbols)
 
     logger.info("="*60)
