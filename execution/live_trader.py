@@ -5,6 +5,7 @@ from datetime import datetime
 from typing import Dict, Optional
 
 from .broker_adapter import BrokerAdapter
+from .risk_guard import RiskGuard
 from .signal_handler import SignalHandler, Signal, SignalType
 
 logger = logging.getLogger(__name__)
@@ -17,15 +18,25 @@ DEFAULT_MAX_OPEN_POSITIONS = 10
 
 DEFAULT_POLL_INTERVAL_SECONDS = 60
 
+# Minimum pause between blocked cycles. A halted or out-of-hours trader with
+# poll_interval=0 would otherwise spin on get_account() and burn the rate limit.
+BLOCKED_CYCLE_SLEEP_SECONDS = 1.0
+
 
 class LiveTrader:
     def __init__(self, broker_config: Dict, strategy_name: str = "ma_crossover",
-                 strategy_runner=None, poll_interval: Optional[float] = None):
+                 strategy_runner=None, poll_interval: Optional[float] = None,
+                 risk_guard: Optional[RiskGuard] = None, now_provider=None):
         self.broker_config = broker_config
         self.strategy_name = strategy_name
         self.broker = BrokerAdapter(broker_config)
         self.signal_handler = SignalHandler(broker_config)
         self.strategy_runner = strategy_runner
+        # Kill switch / max-daily-loss / market-hours rails. Injectable so tests
+        # can supply a fixed clock instead of reading the wall clock.
+        self.risk_guard = risk_guard if risk_guard is not None else RiskGuard.from_config(
+            broker_config, now_provider=now_provider)
+        self._liquidated_for_daily_loss = False
         self.running = False
         self.trades_executed = []
         position_management = broker_config.get("position_management") or {}
@@ -68,12 +79,17 @@ class LiveTrader:
         if not self.broker.paper_trading:
             logger.warning("!!! LIVE (NON-PAPER) TRADING IS ACTIVE - REAL MONEY IS AT RISK !!!")
         logger.info(f"Poll interval: {self.poll_interval}s")
+        logger.info(f"Risk rails: {self.risk_guard.describe()}")
         logger.info("="*60)
         account = self.broker.get_account()
         logger.info(f"Initial Account: {account}")
+        self.risk_guard.start_session(account)
 
         try:
             while self.running:
+                if not self._risk_check_passed():
+                    time.sleep(max(self.poll_interval, BLOCKED_CYCLE_SLEEP_SECONDS))
+                    continue
                 if self.strategy_runner is not None:
                     try:
                         self.strategy_runner.poll()
@@ -97,6 +113,50 @@ class LiveTrader:
         self.running = False
         logger.info(f"Trading stopped. Trades executed: {len(self.trades_executed)}")
 
+    # --- risk rails --------------------------------------------------------
+
+    def halt(self, reason: str = "halt() called") -> None:
+        """Trip the kill switch. Trading stops at the next check; the process and
+        any in-flight order are left alone. Stays tripped until reset_kill_switch()."""
+        self.risk_guard.trip(reason)
+
+    def reset_kill_switch(self) -> bool:
+        return self.risk_guard.reset_kill_switch()
+
+    def _risk_check_passed(self) -> bool:
+        """One pre-cycle gate: kill switch, market hours, max daily loss."""
+        decision = self.risk_guard.check_cycle(self.broker.get_account())
+        if decision:
+            return True
+        logger.error("Trading paused this cycle [%s]: %s", decision.code, decision.reason)
+        self._maybe_liquidate()
+        return False
+
+    def _maybe_liquidate(self) -> None:
+        """Flatten open positions after a daily-loss breach - opt-in only.
+
+        Force-closing is itself risky (slippage, closing into a gap), so it never
+        happens unless risk.liquidate_on_daily_loss is explicitly true, and it
+        runs at most once per breach.
+        """
+        if self._liquidated_for_daily_loss or not self.risk_guard.should_liquidate:
+            return
+        self._liquidated_for_daily_loss = True
+        positions = self.broker.get_positions()
+        logger.error("AUTO-LIQUIDATION: flattening %d open position(s) after daily-loss breach.",
+                     len(positions))
+        for symbol in list(positions):
+            try:
+                order = self.broker.close_position(symbol)
+            except Exception as e:
+                logger.error("Auto-liquidation failed for %s: %s", symbol, e)
+                continue
+            if order:
+                self.trades_executed.append(
+                    {"timestamp": datetime.now(), "signal": None, "order": order})
+            else:
+                logger.error("Auto-liquidation of %s was not accepted by the broker.", symbol)
+
     def submit_signal(self, signal: Signal) -> bool:
         return self.signal_handler.add_signal(signal)
 
@@ -108,6 +168,14 @@ class LiveTrader:
         account = self.broker.get_account()
 
         if signal.signal_type == SignalType.BUY:
+            # Last gate before any new position is sized. Clock-free by design
+            # (kill switch + daily loss); the market-hours gate runs once per
+            # cycle in _risk_check_passed() so the order path stays deterministic.
+            entry = self.risk_guard.check_new_entry(account)
+            if not entry:
+                logger.error("Refusing BUY %s [%s]: %s", symbol, entry.code, entry.reason)
+                self._maybe_liquidate()
+                return
             if symbol in positions:
                 logger.debug(f"Skipping BUY {symbol}: position already open")
                 return
@@ -194,4 +262,5 @@ class LiveTrader:
         positions = self.broker.get_positions()
         return {"running": self.running, "strategy": self.strategy_name, "account": account,
                "open_positions": len(positions), "trades_executed": len(self.trades_executed),
+               "halted": self.risk_guard.halted, "risk": self.risk_guard.describe(),
                "timestamp": datetime.now().isoformat()}

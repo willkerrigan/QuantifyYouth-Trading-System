@@ -104,6 +104,29 @@ python scripts/run_out_of_sample.py --config config/backtest_config.yaml \
 - Paper trading enabled by default
 - Position management and risk limits
 
+### 4. Pre-Trade Risk Rails (`execution/risk_guard.py`)
+
+Checked before every order, configured under `risk:` in the broker config:
+
+- **Max daily loss** (`max_daily_loss_pct` / `max_daily_loss_amount`) — measured
+  against equity at session start, so realized and unrealized P&L both count.
+  A breach halts new entries and **leaves open positions alone**; set
+  `liquidate_on_daily_loss: true` to opt into auto-flattening. Omit the keys to
+  disable.
+- **Kill switch** — programmatic (`LiveTrader.halt()`) or operational (create the
+  file at `risk.kill_switch_file`, polled each cycle). It **latches**: remove the
+  file *and* call `LiveTrader.reset_kill_switch()` to resume.
+- **Market-hours gate — ON BY DEFAULT once a `risk:` section exists.** This is
+  the one rail you get without asking for it: declaring `risk:` (even empty)
+  arms it, and outside weekdays 09:30–16:00 `America/New_York` the trader skips
+  the whole poll cycle. Opt out with `risk.market_hours.enabled: false` or
+  `allow_outside_hours: true`. A config with **no** `risk:` section keeps the
+  old always-on behaviour so pre-existing deployments don't start halting
+  silently. The timezone is resolved with `zoneinfo`, so US DST is handled —
+  never replace it with a fixed UTC offset. **Market holidays are NOT tracked:**
+  the gate is weekday + time-of-day only, so Thanksgiving, Good Friday and 13:00
+  early closes all read as "open". A real calendar needs an exchange data source.
+
 ## Development
 
 ### Install dev dependencies
