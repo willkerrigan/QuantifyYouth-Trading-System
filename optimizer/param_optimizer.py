@@ -5,6 +5,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
+import numpy as np
 import pandas as pd
 
 from backtester.engine import BacktestEngine
@@ -32,6 +33,14 @@ class ParameterOptimizer:
         self.in_sample_start_date = in_sample_start_date
         self.in_sample_end_date = in_sample_end_date
         self.results = []
+        # max_drawdown is reported as a negative fraction (-0.25 == a 25% drawdown),
+        # so "minimize" selects -0.40 over -0.02 — the worst run, not the best.
+        # The intuitive-sounding setting is the wrong one, so say so loudly.
+        if metric == "max_drawdown" and direction == "minimize":
+            logger.warning(
+                "optimization.metric=max_drawdown with score_direction=minimize selects the "
+                "LARGEST drawdown, because drawdowns are negative numbers. Use "
+                "score_direction: maximize to prefer shallower drawdowns.")
 
     def optimize(self, symbols: List[str]) -> Tuple[Dict, List[Dict]]:
         param_ranges = self.config["strategy"].get("parameters", {})
@@ -64,12 +73,40 @@ class ParameterOptimizer:
                 except Exception as e:
                     logger.error(f"Backtest failed for params {params}: {e}")
 
-        self.results.sort(key=lambda x: x[self.metric], reverse=(self.direction == "maximize"))
+        self._sort_results()
         if not self.results:
             return {}, []
         best_result = self.results[0]
         logger.info(f"Optimization complete. Best {self.metric}: {best_result[self.metric]:.4f}")
         return best_result["parameters"], self.results
+
+    def _sort_results(self) -> None:
+        """Rank results best-first, keeping degenerate scores from winning.
+
+        A NaN score used as a sort key makes ordering depend on input order
+        (every NaN comparison is False), so a single degenerate combination can
+        silently scramble the whole ranking. Non-finite scores are pushed to the
+        end instead. An infinite profit_factor is the common case: a combination
+        with zero losing trades scores inf and would otherwise always rank first
+        no matter how few trades produced it.
+        """
+        maximize = self.direction == "maximize"
+
+        def sort_key(result):
+            value = result.get(self.metric)
+            try:
+                value = float(value)
+            except (TypeError, ValueError):
+                return (1, 0.0)
+            if not np.isfinite(value):
+                return (1, 0.0)
+            return (0, -value if maximize else value)
+
+        self.results.sort(key=sort_key)
+        dropped = sum(1 for r in self.results if sort_key(r)[0] == 1)
+        if dropped:
+            logger.warning(f"{dropped} combination(s) scored a non-finite {self.metric} "
+                           f"and were ranked last rather than allowed to win.")
 
     def _run_backtest_wrapper(self, symbols: List[str], params: Dict, in_sample_end_date: str,
                               in_sample_start_date: Optional[str] = None) -> Optional[Dict]:
