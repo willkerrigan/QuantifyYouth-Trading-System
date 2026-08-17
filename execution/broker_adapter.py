@@ -88,3 +88,32 @@ class BrokerAdapter:
         except Exception as e:
             logger.error(f"Failed to close position: {e}")
             return None
+    def reconcile_order(self, order_id: str) -> Optional[Dict]:
+        """Check what actually happened to an order after submission.
+        Returns fill details or None if the order can't be found.
+        Call this after submit_order to confirm the fill before updating internal state."""
+        try:
+            order = self.client.get_order_by_id(order_id)
+            filled_qty = float(order.filled_qty) if order.filled_qty else 0.0
+            filled_price = float(order.filled_avg_price) if order.filled_avg_price else 0.0
+            status = order.status.value
+
+            if status != "filled":
+                logger.warning(
+                    f"Order {order_id} for {order.symbol} is '{status}', "
+                    f"not 'filled'. Filled qty: {filled_qty}. "
+                    f"Do not assume full fill."
+                )
+
+            return {
+                "order_id": order_id,
+                "symbol": order.symbol,
+                "status": status,
+                "requested_qty": float(order.qty),
+                "filled_qty": filled_qty,
+                "filled_avg_price": filled_price,
+                "fully_filled": status == "filled" and filled_qty == float(order.qty),
+            }
+        except Exception as e:
+            logger.error(f"Failed to reconcile order {order_id}: {e}")
+            return None

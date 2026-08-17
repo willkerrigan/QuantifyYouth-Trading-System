@@ -142,3 +142,66 @@ class ParameterOptimizer:
                     output_path / f"trade_log_rank{i+1}_{timestamp}.csv", index=False)
             if not result["equity_curve"].empty:
                 result["equity_curve"].to_csv(output_path / f"equity_curve_rank{i+1}_{timestamp}.csv", index=False)
+    def sensitivity_analysis(self, symbols: List[str], best_params: Dict, steps: int = 2) -> Dict:
+        """For each parameter in best_params, nudge it up and down by `steps` 
+        increments and record the metric. A real edge should be stable across 
+        nearby values. A sharp spike means the optimizer got lucky on one number."""
+        in_sample_end_date = self.in_sample_end_date or self.config["backtest"].get("in_sample_end_date")
+        param_ranges = self.config["strategy"].get("parameters", {})
+        sensitivity = {}
+
+        for param_name, best_value in best_params.items():
+            grid = param_ranges.get(param_name)
+            if not isinstance(grid, list) or len(grid) < 2:
+                logger.info(f"Skipping sensitivity for '{param_name}': not enough grid values to nudge")
+                continue
+
+            sorted_grid = sorted(grid)
+            if best_value not in sorted_grid:
+                continue
+
+            idx = sorted_grid.index(best_value)
+            candidates = []
+            for offset in range(-steps, steps + 1):
+                candidate_idx = idx + offset
+                if 0 <= candidate_idx < len(sorted_grid):
+                    candidates.append(sorted_grid[candidate_idx])
+
+            scores = {}
+            for candidate in candidates:
+                test_params = dict(best_params)
+                test_params[param_name] = candidate
+                result = self._run_backtest_wrapper(symbols, test_params, in_sample_end_date)
+                if result:
+                    scores[candidate] = result.get(self.metric, 0.0)
+                else:
+                    scores[candidate] = None
+
+            sensitivity[param_name] = {
+                "best_value": best_value,
+                "best_score": scores.get(best_value),
+                "scores_by_value": scores,
+                "stable": self._is_stable(scores, best_value),
+            }
+            logger.info(f"Sensitivity '{param_name}': {scores}")
+            if not sensitivity[param_name]["stable"]:
+                logger.warning(
+                    f"Parameter '{param_name}' looks unstable -- performance collapses "
+                    f"when nudged away from {best_value}. This may be curve-fitting."
+                )
+
+        return sensitivity
+
+    @staticmethod
+    def _is_stable(scores: Dict, best_value) -> bool:
+        """Returns True if nearby values perform within 50% of the best value's score.
+        If moving one step away causes a collapse, it's not a real edge."""
+        best_score = scores.get(best_value)
+        if best_score is None or best_score == 0:
+            return False
+        for value, score in scores.items():
+            if score is None:
+                continue
+            if abs(score - best_score) / abs(best_score) > 0.5:
+                return False
+        return True

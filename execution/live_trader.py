@@ -3,6 +3,7 @@ import math
 import time
 from datetime import datetime
 from typing import Dict, Optional
+from pathlib import Path
 
 from .broker_adapter import BrokerAdapter
 from .risk_guard import RiskGuard
@@ -94,7 +95,6 @@ class LiveTrader:
                     try:
                         self.strategy_runner.poll()
                     except Exception as e:
-                        # A bad poll must not kill the trade loop or strand open positions.
                         logger.error(f"Strategy poll failed: {e}")
                 signal = self.signal_handler.get_next_signal()
                 while signal:
@@ -108,7 +108,6 @@ class LiveTrader:
         except Exception as e:
             logger.error(f"Trading error: {e}")
             self.stop()
-
     def stop(self) -> None:
         self.running = False
         logger.info(f"Trading stopped. Trades executed: {len(self.trades_executed)}")
@@ -212,7 +211,16 @@ class LiveTrader:
 
             order = self.broker.submit_order(symbol, position_size, "buy")
             if order:
-                self.trades_executed.append({"timestamp": datetime.now(), "signal": signal, "order": order})
+                fill = None
+                if hasattr(self.broker, "reconcile_order"):
+                    fill = self.broker.reconcile_order(order["order_id"])
+                    if fill and not fill["fully_filled"]:
+                        logger.warning(
+                            f"Partial fill on {symbol}: requested {position_size}, "
+                            f"got {fill['filled_qty']} @ {fill['filled_avg_price']}. "
+                            f"Position size may differ from backtest assumption."
+                        )
+                self.trades_executed.append({"timestamp": datetime.now(), "signal": signal, "order": order, "fill": fill})
                 self.signal_handler.process_signal(signal)
 
         elif signal.signal_type == SignalType.SELL:

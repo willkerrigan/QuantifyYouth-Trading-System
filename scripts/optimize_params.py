@@ -48,5 +48,17 @@ def main():
     optimizer.export_results(args.output, top_n=top_n)
     logger.info(f"Results exported to {args.output}")
 
+    # run sensitivity check on best params
+    sensitivity = optimizer.sensitivity_analysis(symbols, best_params)
+    logger.info("="*60)
+    logger.info("PARAMETER SENSITIVITY")
+    logger.info("="*60)
+    for param, info in sensitivity.items():
+        stable = "STABLE" if info["stable"] else "UNSTABLE -- possible curve-fit"
+        logger.info(f"{param}: best={info['best_value']} ({stable})")
+        for value, score in info["scores_by_value"].items():
+            marker = " <-- best" if value == info["best_value"] else ""
+            logger.info(f"  {value}: {score:.4f}{marker}" if score is not None else f"  {value}: failed")
+
 if __name__ == "__main__":
     main()
