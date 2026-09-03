@@ -278,7 +278,7 @@ def test_non_string_symbol_is_an_error():
 # data.timeframe -- validated against periods_per_year_for_timeframe
 # --------------------------------------------------------------------------
 
-@pytest.mark.parametrize("timeframe", ["1w", "daily", "1D", "", "15", "m", "abcm", 15])
+@pytest.mark.parametrize("timeframe", ["1w", "daily", "", "15", "m", "abcm", 15])
 def test_unsupported_timeframe_is_an_error(timeframe):
     config = valid_config()
     config["data"]["timeframe"] = timeframe
@@ -303,11 +303,20 @@ def test_every_accepted_timeframe_actually_annualizes():
     """The accepted set is exactly what backtester.metrics can parse."""
     from backtester.metrics import periods_per_year_for_timeframe
 
-    for timeframe in ("1d", "1m", "5m", "30m", "1h", "2h"):
+    for timeframe in ("1d", "1D", "1m", "5m", "30m", "15min", "1h", "1hour", "2h"):
         config = valid_config()
         config["data"]["timeframe"] = timeframe
         assert validate_config(config) == []
         assert periods_per_year_for_timeframe(timeframe) > 0
+
+
+def test_yahoo_with_normalized_intraday_timeframe_warns_about_retention():
+    config = valid_config()
+    config["data"]["source"] = "yahoo"
+    config["data"]["timeframe"] = "15 minutes"
+    warnings = validate_config(config)
+    assert len(warnings) == 1
+    assert "60 days of intraday history" in warnings[0]
 
 
 # --------------------------------------------------------------------------

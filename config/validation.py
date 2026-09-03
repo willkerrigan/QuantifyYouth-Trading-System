@@ -91,8 +91,8 @@ def _timeframe_problem(timeframe: Any) -> Optional[str]:
 
     The set of accepted strings is not hardcoded here: it is whatever
     ``backtester.metrics.periods_per_year_for_timeframe`` can actually turn into
-    a bars-per-year figure ('1d', 'Nm', 'Nh'). Anything it rejects would either
-    crash a run or be silently annualized wrong.
+    a bars-per-year figure. Anything it rejects would either crash a run or be
+    silently annualized wrong.
     """
     from backtester.metrics import periods_per_year_for_timeframe
 
@@ -101,14 +101,21 @@ def _timeframe_problem(timeframe: Any) -> Optional[str]:
     try:
         periods = periods_per_year_for_timeframe(timeframe)
     except (ValueError, IndexError, TypeError, ZeroDivisionError):
-        return "is not a timeframe this code can parse; supported forms are '1d', 'Nm' (minutes) and 'Nh' (hours)"
+        return "is not a timeframe this code can parse; supported forms include '1d', '15m', '15min', '1h' and '1hour'"
     if periods <= 0:
         return "is too coarse to annualize (it works out to zero bars per year)"
     return None
 
 
 def _is_intraday(timeframe: Any) -> bool:
-    return isinstance(timeframe, str) and timeframe.endswith(("m", "h"))
+    if not isinstance(timeframe, str):
+        return False
+    from backtester.metrics import normalize_timeframe
+
+    try:
+        return normalize_timeframe(timeframe).endswith(("m", "h"))
+    except ValueError:
+        return False
 
 
 def _check_backtest(backtest: Dict[str, Any], errors: List[str], warnings: List[str]) -> None:

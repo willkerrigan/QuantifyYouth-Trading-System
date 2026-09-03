@@ -4,7 +4,7 @@ import pytest
 import pandas as pd
 from datetime import datetime
 from backtester.engine import BacktestEngine, Trade
-from backtester.metrics import RiskMetrics, periods_per_year_for_timeframe
+from backtester.metrics import RiskMetrics, normalize_timeframe, periods_per_year_for_timeframe
 
 
 class _StubDataLoader:
@@ -359,6 +359,19 @@ def test_periods_per_year_for_daily_timeframe():
 def test_periods_per_year_for_15m_timeframe():
     # 390 regular-session minutes / 15 = 26 bars/day * 252 trading days
     assert periods_per_year_for_timeframe("15m") == 26 * 252
+
+
+def test_timeframe_normalization_accepts_common_spellings():
+    assert normalize_timeframe("1D") == "1d"
+    assert normalize_timeframe("15min") == "15m"
+    assert normalize_timeframe("15 minutes") == "15m"
+    assert normalize_timeframe("1hour") == "1h"
+    assert normalize_timeframe("1 hr") == "1h"
+
+
+def test_periods_per_year_uses_normalized_timeframes():
+    assert periods_per_year_for_timeframe("1D") == 252
+    assert periods_per_year_for_timeframe("15 minutes") == 26 * 252
 
 
 def test_trade_creation():

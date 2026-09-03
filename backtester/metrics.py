@@ -1,16 +1,59 @@
 import numpy as np
 import pandas as pd
+import re
 from typing import Dict, List
 
 # Regular US equity session length, used to convert an intraday bar count into
 # an equivalent number of trading days for Sharpe-ratio annualization.
 _SESSION_MINUTES = 390
+_TIMEFRAME_PATTERN = re.compile(r"^\s*(\d+)\s*([a-zA-Z]+)\s*$")
+
+
+def normalize_timeframe(timeframe: str) -> str:
+    """Convert common timeframe spellings to compact yfinance-style strings.
+
+    Accepts forms such as "1D", "15min", "15 minutes", "1hr" and "1 hour",
+    returning "1d", "15m" or "1h". Keeping this normalization in one place
+    prevents config validation, downloads and metrics from accepting different
+    sets of strings.
+    """
+    if not isinstance(timeframe, str):
+        raise ValueError(f"Timeframe must be a string, got {type(timeframe).__name__}")
+
+    match = _TIMEFRAME_PATTERN.match(timeframe)
+    if not match:
+        raise ValueError(f"Unsupported timeframe: {timeframe}")
+
+    value = int(match.group(1))
+    unit = match.group(2).lower()
+    if value <= 0:
+        raise ValueError(f"Timeframe value must be positive: {timeframe}")
+
+    aliases = {
+        "d": "d",
+        "day": "d",
+        "days": "d",
+        "m": "m",
+        "min": "m",
+        "mins": "m",
+        "minute": "m",
+        "minutes": "m",
+        "h": "h",
+        "hr": "h",
+        "hrs": "h",
+        "hour": "h",
+        "hours": "h",
+    }
+    if unit not in aliases:
+        raise ValueError(f"Unsupported timeframe unit: {timeframe}")
+    return f"{value}{aliases[unit]}"
 
 
 def periods_per_year_for_timeframe(timeframe: str) -> int:
     """Bars per year for a given bar size, so calculate_sharpe_ratio annualizes
     correctly regardless of whether the equity curve is built from daily or
     intraday bars. '1d' -> 252; 'Nm'/'Nh' -> 252 * (bars per regular session)."""
+    timeframe = normalize_timeframe(timeframe)
     if timeframe == "1d":
         return 252
     unit, value = timeframe[-1], int(timeframe[:-1])

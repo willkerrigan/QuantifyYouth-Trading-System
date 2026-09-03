@@ -182,6 +182,16 @@ def test_intraday_60_day_warning_preserved(monkeypatch, caplog):
     assert "start" not in calls[0][1]
 
 
+def test_yahoo_download_uses_normalized_timeframe(monkeypatch):
+    calls = []
+    _stub_yfinance(monkeypatch, _valid_frame(), calls=calls)
+
+    DataLoader(_config(timeframe="15 minutes")).load("SPY")
+
+    assert calls[0][1]["interval"] == "15m"
+    assert calls[0][1]["period"] == "60d"
+
+
 # --- happy path / caching --------------------------------------------------
 
 def test_valid_data_loads_and_caches(monkeypatch):

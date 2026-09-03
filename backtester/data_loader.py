@@ -1,6 +1,7 @@
 import logging
 from typing import Dict
 import pandas as pd
+from .metrics import normalize_timeframe
 
 logger = logging.getLogger(__name__)
 
@@ -31,7 +32,7 @@ class DataLoader:
 
         start_date = self.config["backtest"].get("start_date", "2023-01-01")
         end_date = self.config["backtest"].get("end_date", "2026-07-14")
-        interval = self.config.get("data", {}).get("timeframe", "1d")
+        interval = normalize_timeframe(self.config.get("data", {}).get("timeframe", "1d"))
         logger.info(f"Loading {symbol} data from {self.source} (interval={interval})")
 
         # Human-readable description of the request, attached to every error so a
