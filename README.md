@@ -2,6 +2,8 @@
 
 A production-grade algorithmic trading platform with parameter optimization, live execution, and comprehensive risk analysis.
 
+Project status: complete and refreshed on September 3, 2026.
+
 ## Features
 
 - **Backtesting Engine**: Historical performance analysis with precise trade simulation
